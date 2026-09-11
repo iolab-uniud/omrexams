@@ -1,0 +1,17 @@
+exam:
+  engine: typst
+  name: Esempio visuale Typst
+  language: italian
+  shuffle_questions: false
+  shuffle_answers: false
+  qr_eclevel: H
+
+header: "**OMRExams** - esempio Typst"
+footer: "Fixture visuale del workflow generate, sort e correct."
+warning: |
+  **Non scrivere in quest'area!**
+  Usa solo per indicare le risposte definitive.
+
+questions:
+  - from: questions.md
+    draw: 6

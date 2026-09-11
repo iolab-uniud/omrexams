@@ -44,6 +44,28 @@ def test_typst_renderer_preserves_answers_and_permutation():
     assert "#block[#strong[B)] 4]" in document.source
 
 
+def test_typst_renderer_supports_horizontal_answers_and_inline_title():
+    source = """---
+## Titolo sulla riga del numero
+* [ ] Prima
+* [x] Seconda
+* [ ] Terza
+---
+"""
+    renderer = TypstQuestionRenderer(
+        date=datetime(2026, 9, 11),
+        exam="Prova",
+        student_no="123",
+        shuffle=False,
+    )
+
+    document = renderer.render(Document(source))
+
+    assert '#question(1, ("A", "B", "C",), [Titolo sulla riga del numero])[' in document.source
+    assert "#grid(columns: (1fr,) * 3" in document.source
+    assert "#block[#strong[A)]" not in document.source
+
+
 def test_typst_engine_rejects_latex_extensions(tmp_path):
     config = {
         "exam": {"engine": "typst"},

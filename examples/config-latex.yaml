@@ -1,0 +1,14 @@
+exam:
+  engine: latex
+  name: Esempio visuale LaTeX
+  language: italian
+  shuffle_questions: false
+  shuffle_answers: false
+  qr_eclevel: H
+
+header: "**OMRExams** - esempio LaTeX"
+footer: "Fixture visuale del workflow generate, sort e correct."
+
+questions:
+  - from: questions.md
+    draw: 6

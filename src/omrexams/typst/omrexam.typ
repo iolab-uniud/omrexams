@@ -68,12 +68,49 @@
   ),
 )
 
-#let page-markers(student-data, qr-error-correction, warning, show-roi) = {
+#let exam-header(header, exam-name, exam-date, student-name, student-id) = block(
+  width: separator-x - crop-margin - barcode-size - 2mm,
+  height: barcode-size,
+  inset: (top: 1pt),
+)[
+  #set text(size: 8pt)
+  #text(size: 11pt, weight: "semibold", header)
+  #v(2pt)
+  #line(length: 100%, stroke: 0.5pt + omr-gray)
+  #v(3pt)
+  #grid(
+    columns: (1fr, auto),
+    row-gutter: 2pt,
+    align: (left, right),
+    text(weight: "bold", exam-name),
+    exam-date,
+    student-name,
+    student-id,
+  )
+]
+
+#let page-markers(
+  student-data,
+  qr-error-correction,
+  warning,
+  show-roi,
+  header,
+  exam-name,
+  exam-date,
+  student-name,
+  student-id,
+) = {
   place(
     top + left,
     dx: crop-margin,
     dy: crop-margin,
     qr-code(student-data, width: barcode-size, height: barcode-size, error-correction: qr-error-correction),
+  )
+  place(
+    top + left,
+    dx: crop-margin + barcode-size + 2mm,
+    dy: crop-margin,
+    exam-header(header, exam-name, exam-date, student-name, student-id),
   )
   place(top + right, dx: -crop-margin, dy: crop-margin, registration-mark())
   place(bottom + left, dx: crop-margin, dy: -crop-margin, registration-mark())
@@ -107,7 +144,7 @@
 
 #let omr-row(number, labels) = grid(
   columns: (marker-size, 1fr),
-  column-gutter: 4pt,
+  column-gutter: marker-size / 4,
   align: horizon,
   bubble(body: str(number), filled: true),
   grid(
@@ -134,29 +171,27 @@
   set page(
     paper: "a4",
     margin: (top: vertical-margin, bottom: vertical-margin, left: 10mm, right: 62.5mm),
-    header: context {
-      pad(left: barcode-size + 2mm, header)
-    },
     footer: footer,
     foreground: context {
-      page-markers(student-id + "," + solution, qr-error-correction, warning, show-roi)
+      page-markers(
+        student-id + "," + solution,
+        qr-error-correction,
+        warning,
+        show-roi,
+        header,
+        exam-name,
+        exam-date,
+        student-name,
+        student-id,
+      )
     },
   )
   set text(size: 10pt)
   set par(justify: true)
-
-  if exam-name != "" or student-name != "" {
-    grid(
-      columns: (1fr, auto),
-      [*#exam-name*], [#exam-date],
-      [#student-name], [#student-id],
-    )
-    v(0.75em)
-  }
   body
 }
 
-#let question(number, answers, body) = {
+#let question(number, answers, title, body) = {
   let has-markers = answers.len() > 0
   block(
     width: 100%,
@@ -166,6 +201,7 @@
       #metadata(number)<omr-question>
       #place(dx: 142.5mm + marker-size / 4, omr-row(number, answers))
     ]
-    *#number.* #body
+    *#number.* #title
+    #body
   ]
 }

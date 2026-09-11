@@ -206,7 +206,8 @@ class TypstQuestionRenderer(TypstRenderer):
             return inner
         number = len(self.questions)
         labels = tuple(chr(ord("A") + index) for index in range(len(self.questions[-1]["answers"])))
-        return f"\n{prefix}#question({number}, {self._tuple(labels)})[{inner}]\n"
+        title = self.questions[-1]["question"]
+        return f"\n{prefix}#question({number}, {self._tuple(labels)}, [{title}])[{inner}]\n"
 
     def render_heading(self, token):
         if token.level == 1:
@@ -215,7 +216,7 @@ class TypstQuestionRenderer(TypstRenderer):
             return f"#strong[Q:] {self.render_inner(token).strip()}\n"
         inner = self.render_inner(token).strip()
         self.questions[-1]["question"] = inner
-        return f"{inner}\n"
+        return ""
 
     def render_question_list(self, token):
         self.record_answers = True
@@ -241,15 +242,23 @@ class TypstQuestionRenderer(TypstRenderer):
             answers = [answers[index] for index in permutation]
         self.questions[-1]["permutation"] = permutation
 
-        rows = []
+        items = []
         for index, answer in enumerate(answers):
             label = chr(ord("A") + index)
             if self.parameters.get("test", False) and self.questions[-1]["answers"][index]:
                 label = f"#strong[✓ {label})]"
             else:
                 label = f"#strong[{label})]"
-            rows.append(f"#block[{label} {answer}]\n")
-        return "".join(rows)
+            items.append(f"[{label} {answer}]")
+        if token.leader == "*" or token.leader.endswith(")"):
+            return (
+                "\n#grid("
+                f"columns: (1fr,) * {len(items)}, "
+                "column-gutter: 8pt, row-gutter: 4pt, "
+                + ", ".join(items)
+                + ")\n"
+            )
+        return "".join(f"#block{item}\n" for item in items)
 
     def render_list_item(self, token):
         if self.record_answers:

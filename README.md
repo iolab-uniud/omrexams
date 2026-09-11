@@ -54,3 +54,12 @@ the answer area.
 The `omrexams test` command shows the answer ROI by default when using Typst.
 Set `exam.show_roi: false` in the YAML configuration to hide it in test PDFs.
 
+Question answer lists preserve the existing Markdown layout convention in both
+backends: `- [ ]` and `+ [ ]` render vertically, while `* [ ]` and `1) [ ]`
+render horizontally. Ordered answer lists are not shuffled.
+
+The [`examples`](../../examples) directory contains a shared multipage fixture
+and a generator for visual LaTeX/Typst output in A4 and folded A3 formats. The
+integration smoke tests run the same fixture through generation, artificial
+answer marking, `sort`, and `correct` for all four engine/paper combinations.
+
