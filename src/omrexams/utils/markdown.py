@@ -43,9 +43,9 @@ class QuestionsEnvironment(pylatex.base_classes.Environment):
     escape = False
     content_separator = "\n"
 
-# Define a custom renderer back to markdown so that it can be further processed 
+# Define a custom renderer back to markdown so that it can be further processed
 # into latex later
-           
+
 
 class QuestionMarker(span_token.SpanToken):
     pattern = re.compile(r"\[([ |x])\] {0,1}")
@@ -67,20 +67,32 @@ class Lines(span_token.SpanToken):
 
 class LatexFormula(span_token.SpanToken):
     pattern = re.compile(r'(?<!\\)((?<!\$)\${1,2}(?!\$))(?(1)(.*?))(?<!\\)(?<!\$)\1(?!\$)')
-    
+
     def __init__(self, match):
         self.symbol = match.group(1)
         self.content = match.group(2)
-        
+
+class LatexCommand(span_token.SpanToken):
+    pattern = re.compile(r"(\\[a-zA-Z]+\{[^}]+\})")
+
+    def __init__(self, match):
+        self.command = match.group(1)
+
+class SaytexFormula(span_token.SpanToken):
+    pattern = re.compile(r'(\u00A3.*?\u00A3)')
+
+    def __init__(self, match):
+        self.content = match.group(1)[1:-1]
+
 class QuestionList(block_token.List):
     """
-    Question Lists are regular lists with a checkbox marker, however they will be treated differently 
+    Question Lists are regular lists with a checkbox marker, however they will be treated differently
     during the text rendering process.
 
-    Lists with a leading '-', and '+' will be rendered as single paragraphs, whereas those starting 
+    Lists with a leading '-', and '+' will be rendered as single paragraphs, whereas those starting
     with '*' are rendered inline (i.e., with no page break).
 
-    Ordered lists (i.e., with a leading numeric), will be rendered as single paragraphs if with 
+    Ordered lists (i.e., with a leading numeric), will be rendered as single paragraphs if with
     a trailing '.' and inline if with a trailing ')'. Moreover, they will not be shuffled.
 
     Summary:
@@ -100,7 +112,7 @@ class QuestionList(block_token.List):
 
 class QuestionBlock(block_token.BlockToken):
     """
-    Question Block is identified by a horizontal rule with at least 3 elements at the 
+    Question Block is identified by a horizontal rule with at least 3 elements at the
     very beginning of the line
     """
     pattern = re.compile(r'^(?:-{3,})\s*$')
@@ -109,20 +121,20 @@ class QuestionBlock(block_token.BlockToken):
         super().__init__(lines, block_token.tokenize)
 
     @classmethod
-    def start(cls, line):        
+    def start(cls, line):
         return cls.pattern.match(line)
 
     @classmethod
     def read(cls, lines):
         next(lines) # skip the first line
-        line_buffer = [] 
+        line_buffer = []
         next_line = lines.peek()
         while next_line is not None and not cls.pattern.match(next_line):
             line_buffer.append(next(lines))
-            next_line = lines.peek()        
+            next_line = lines.peek()
         return line_buffer
 
-class QuestionRenderer(LaTeXRenderer):   
+class QuestionRenderer(LaTeXRenderer):
     def __init__(self, *extras, **kwargs):
         """
         Args:
@@ -138,15 +150,33 @@ class QuestionRenderer(LaTeXRenderer):
         self.questions = []
         # TODO: check parameter coherence
         self.parameters = kwargs
-        super().__init__(*chain([QuestionMarker, QuestionTopic, QuestionList, QuestionBlock, Lines], extras)) 
-        
+        super().__init__(*chain([QuestionMarker, QuestionTopic, QuestionList, QuestionBlock, Lines, LatexCommand, LatexFormula, SaytexFormula], extras))
+
+    def render_latex_formula(self, token):
+        if token.symbol == '$':
+            return f'${token.content}$'
+        else:
+            return f'$${token.content}$$'
+
+    def render_latex_command(self, token):
+        return token.command
+
+    def render_saytex_formula(self, token):
+        try:
+            import saytex
+            compiler = saytex.Saytex()
+            latex_code = compiler.to_latex(token.content)
+            return f"${latex_code}$"
+        except Exception:
+            return f"${token.content}$"
+
     def render_question_marker(self, token):
         if not self.record_answers:
             raise ValueError(f"Probably a misplaced question marker has been used (i.e., a list not starting with it) for question \"{self.questions[-1]['question']}\"")
         if token.marker != ' ':
             self.questions[-1]['answers'].append(True)
         else:
-            self.questions[-1]['answers'].append(False)            
+            self.questions[-1]['answers'].append(False)
         return ''
 
     def render_question_topic(self, token):
@@ -154,7 +184,7 @@ class QuestionRenderer(LaTeXRenderer):
             return ''
         else:
             return f'\\fbox{{\\texttt{{{token.id}}}}}'
-    
+
     def render_lines(self, token):
         return token.lines
 
@@ -178,16 +208,20 @@ class QuestionRenderer(LaTeXRenderer):
             return f'\n\\includegraphics[max width=\\linewidth]{{{path}}}\n'
 
     def render_question_block(self, token):
-        # possibly, the first question could start without a marker 
+        # possibly, the first question could start without a marker
         # and could contain the heading of the section
         self.questions.append({ 'question': "", 'answers': [], 'permutation': [], 'type': None })
         inner = self.render_inner(token)
-        return f'\n\\begin{{minipage}}{{\\linewidth}}\n{inner}\n\\end{{minipage}}\n'
+        prefix = ''
+        if '[NEWPAGE]' in inner:
+            inner = inner.replace('[NEWPAGE]', '')
+            prefix = '\\newpage\n'
+        return f'\n{prefix}\\begin{{minipage}}{{\\linewidth}}\n{inner}\n\\end{{minipage}}\n'
 
     def render_table_row(self, token):
         cells = [self.render(child) for child in token.children]
         return ' & '.join(cells) + ' \\\\\n'
-    
+
     def render_heading(self, token):
         if token.level == 1:
             if self.parameters.get('test', False):
@@ -196,11 +230,11 @@ class QuestionRenderer(LaTeXRenderer):
                 return ''
         if token.level > 2:
             inner = self.render_inner(token).strip()
-            return f'\\textbf{{Q:}} {inner}\n\\newline'
+            return f'\\textbf{{Q:}} {inner}\n'
         template = "\\question\n{inner}"
         inner = self.render_inner(token).strip()
-        self.questions[-1]['question'] = inner 
-        return template.format(inner=inner)  
+        self.questions[-1]['question'] = inner
+        return template.format(inner=inner)
 
     def render_list(self, token):
         self.packages['listings'] = []
@@ -266,13 +300,13 @@ class QuestionRenderer(LaTeXRenderer):
             return f"\n{inner}\n"
         else:
             return template.format(inner, language="")
-    
+
     def render_list_item(self, token):
         if not self.record_answers:
             return self.custom_render_list_item(token)
         else:
             return "".join(self.render(child) for child in token.children)
-        #    raise Error("Once a question list is started all the list items must be questions")                               
+        #    raise Error("Once a question list is started all the list items must be questions")
 
     def render_document(self, token):
         if not self.parameters.get('test', False):
@@ -283,7 +317,7 @@ class QuestionRenderer(LaTeXRenderer):
     def render_exam(self, token):
         self.packages['listings'] = []
         self.footnotes.update(token.footnotes)
-        inner = self.render_inner(token)    
+        inner = self.render_inner(token)
         solutions = []
         # get rid of the empty questions if they are present
         self.questions = list(filter(lambda q: q['question'] != '', self.questions))
@@ -294,11 +328,11 @@ class QuestionRenderer(LaTeXRenderer):
                     current += chr(ord('A') + i)
             solutions.append(current)
         # encryption of the solution is the default option
-        if self.parameters.get('encrypt', True): 
+        if self.parameters.get('encrypt', True):
             solutions = f"{binary_encrypt(solutions, self.parameters['student_no'])}"
 #            solutions = vigenere_encrypt(','.join(solutions), self.parameters['student_no'])
         else:
-            solutions = ','.join(solutions)        
+            solutions = ','.join(solutions)
         options = []
         if self.parameters.get('circled', False):
             options.append('circled')
@@ -306,14 +340,14 @@ class QuestionRenderer(LaTeXRenderer):
             options.append('sflabel')
         if self.parameters.get('dyslexia'):
             options.append('dyslexia')
-            
+
         doc = pylatex.Document('basic')
         doc.documentclass = pylatex.Command('documentclass',
             options=options,
             arguments=['omrexam']
         )
-#        pylatex.Document(documentclass='omrexam', 
-#            inputenc=None, lmodern=False, fontenc=None, textcomp=None,
+#        pylatex.Document(documentclass='omrexam',
+#            inputenc=None, lmodern=False, fontinc=None, textcomp=None,
 #            options=options)
         doc.preamble.append(pylatex.Package('polyglossia'))
         doc.preamble.append(pylatex.Command('setdefaultlanguage', self.parameters.get('language', '').lower()))
@@ -323,7 +357,7 @@ class QuestionRenderer(LaTeXRenderer):
             else:
                 doc.preamble.append(pylatex.Package(package, options=options))
         doc.preamble.append(pylatex.Command('examname', self.parameters.get('exam', '')))
-        doc.preamble.append(pylatex.Command('student', 
+        doc.preamble.append(pylatex.Command('student',
             arguments=[self.parameters['student_no'], self.parameters['student_name']]))
         doc.preamble.append(pylatex.Command('date', self.parameters['date'].strftime('%d/%m/%Y')))
         doc.preamble.append(pylatex.Command('solution', solutions))
@@ -346,9 +380,9 @@ class QuestionRenderer(LaTeXRenderer):
         self.packages['listings'] = []
         self.footnotes.update(token.footnotes)
         self.parameters['shuffle'] = False
-        inner = self.render_inner(token)                
-        #doc = pylatex.Document(documentclass='omrexam', 
-        #    inputenc=None, lmodern=False, fontenc=None, textcomp=None)
+        inner = self.render_inner(token)
+        #doc = pylatex.Document(documentclass='omrexam',
+        #    inputenc=None, lmodern=False, fontinc=None, textcomp=None)
         doc = pylatex.Document('basic')
         doc.documentclass = pylatex.Command('documentclass',
             options=['testing'],
@@ -378,7 +412,7 @@ class QuestionRenderer(LaTeXRenderer):
         with doc.create(QuestionsEnvironment()):
             doc.append(inner)
         return doc
-            
+
 class DocumentStripRenderer(LaTeXRenderer):
     def __init__(self, *extras, **kwargs):
         """
@@ -392,7 +426,7 @@ class DocumentStripRenderer(LaTeXRenderer):
         # TODO: check parameter coherence
         self.parameters = kwargs
         super().__init__(*chain([], extras))
-    
+
     def render_document(self, token):
         return self.render_inner(token)
 
@@ -458,7 +492,7 @@ class CheckmarkRenderer(HTMLRenderer, LaTeXRenderer):
             return template.format('')
 
 
-class MoodleRenderer(BaseRenderer):   
+class MoodleRenderer(BaseRenderer):
     def __init__(self, *extras, **kwargs):
         """
         Args:
@@ -470,15 +504,27 @@ class MoodleRenderer(BaseRenderer):
         self.questions = []
         # TODO: check parameter coherence
         self.parameters = kwargs
-        super().__init__(*chain([QuestionMarker, QuestionTopic, QuestionList, QuestionBlock, Lines, LatexFormula], extras))
-        
+        super().__init__(*chain([QuestionMarker, QuestionTopic, QuestionList, QuestionBlock, Lines, LatexFormula, LatexCommand, SaytexFormula], extras))
+
+    def render_latex_command(self, token):
+        return ''
+
+    def render_saytex_formula(self, token):
+        try:
+            import saytex
+            compiler = saytex.Saytex()
+            latex_code = compiler.to_latex(token.content)
+            return f"\\({latex_code}\\)"
+        except Exception:
+            return f"\\({token.content}\\)"
+
     def render_question_marker(self, token):
         if not self.record_answers:
             raise ValueError(f"Probably a misplaced question marker has been used (i.e., a list not starting with it) for question \"{self.questions[-1]['question']}\"")
         if token.marker != ' ':
             self.questions[-1]['answers'].append(True)
         else:
-            self.questions[-1]['answers'].append(False)            
+            self.questions[-1]['answers'].append(False)
         return ''
 
     def render_question_topic(self, token):
@@ -496,7 +542,7 @@ class MoodleRenderer(BaseRenderer):
             return f'\\\\( {token.content} \\\\)'
         else: # token.symbol == '$$'
             return f'\\\\[ {token.content} \\\\]'
-    
+
     def render_open_question(self, token):
         return ''
 
@@ -509,7 +555,7 @@ class MoodleRenderer(BaseRenderer):
         return f'![{inner}](@@PLUGINFILE@@/{os.path.basename(token.src)})'
 
     def render_question_block(self, token):
-        # possibly, the first question could start without a marker 
+        # possibly, the first question could start without a marker
         # and could contain the heading of the section
         self.questions.append({ 'question': "", 'choices': [], 'answers': [], 'images': [], 'open': False })
         inner = self.render_inner(token)
@@ -519,16 +565,16 @@ class MoodleRenderer(BaseRenderer):
     def render_table_row(self, token):
         cells = [self.render(child) for child in token.children]
         return ' | '.join(cells) + '\n'
-    
+
     def render_heading(self, token):
-        if token.level == 1:            
-            return ''        
+        if token.level == 1:
+            return ''
         inner = self.render_inner(token).strip()
-        if token.level > 2:  
+        if token.level > 3:
             return f'{inner}\n'
 
         self.questions[-1]['question'] = inner
-        self.questions[-1]['open'] = (token.level == 3)  
+        self.questions[-1]['open'] = (token.level == 3)
         return ''
 
     def render_list(self, token):
@@ -564,16 +610,16 @@ class MoodleRenderer(BaseRenderer):
             return template.format(inner, language=token.language)
         else:
             return template.format(inner, language="")
-    
+
     def render_list_item(self, token):
         if not self.record_answers:
             return self.custom_render_list_item(token)
         else:
             self.questions[-1]['choices'].append(" ".join(self.render(child) for child in token.children))
             return ''
-        #    raise Error("Once a question list is started all the list items must be questions")                               
+        #    raise Error("Once a question list is started all the list items must be questions")
 
-    def render_questions(self, token):    
+    def render_questions(self, token):
         def render_question(question, id):
             q = ET.Element('question', type='multichoice')
             name = ET.Element('name')
@@ -582,13 +628,13 @@ class MoodleRenderer(BaseRenderer):
             q.append(name)
             qtext = ET.Element('questiontext', format='markdown')
             _ = ET.SubElement(qtext, 'text')
-            _.text = question['question']  
+            _.text = question['question']
             for path in question['images']:
                 with open(path, 'rb') as f:
                     content = base64.b64encode(f.read())
                     _ = ET.Element('file', name=f'{os.path.basename(path)}', path='/', encoding='base64')
                     _.text = content.decode()
-                    qtext.append(_)          
+                    qtext.append(_)
             q.append(qtext)
             _ = ET.Element('shuffleanswers')
             _.text = 'true'
@@ -597,7 +643,7 @@ class MoodleRenderer(BaseRenderer):
             _.text = 'ABCD'
             q.append(_)
             _ = ET.Element('single')
-            n_correct = sum(filter(lambda a: a, question['answers'])) 
+            n_correct = sum(filter(lambda a: a, question['answers']))
             if self.parameters.get('single', False):
                 _.text = 'true'
                 if n_correct != 1:
@@ -616,13 +662,13 @@ class MoodleRenderer(BaseRenderer):
                     fraction = -round(100 / (n - 1), -1)
                 a = ET.Element('answer', format='markdown', fraction=f"{fraction}")
                 _ = ET.SubElement(a, 'text')
-                _.text = choice                
+                _.text = choice
                 q.append(a)
             _ = ET.Element('penalty')
             _.text = '1.0'
             q.append(_)
-            
-            return q     
+
+            return q
 
         def render_open_question(question, id):
             q = ET.Element('question', type='essay')
@@ -632,7 +678,7 @@ class MoodleRenderer(BaseRenderer):
             q.append(name)
             qtext = ET.Element('questiontext', format='markdown')
             _ = ET.SubElement(qtext, 'text')
-            _.text = question['question']        
+            _.text = question['question']
             for path in question['images']:
                 with open(path, 'rb') as f:
                     content = base64.b64encode(f.read())
@@ -652,15 +698,15 @@ class MoodleRenderer(BaseRenderer):
             _ = ET.Element('attachments')
             _.text = str(0)
             q.append(_)
-            
-            return q             
+
+            return q
 
         self.footnotes.update(token.footnotes)
-        inner = self.render_inner(token)    
+        inner = self.render_inner(token)
 
         root = ET.Element('quiz')
         category = ET.SubElement(root, 'question', type='category')
-         
+
         _ = ET.SubElement(category, 'category')
         _ = ET.SubElement(_, 'text')
         category = self.parameters.get('category', 'default')
@@ -676,4 +722,3 @@ class MoodleRenderer(BaseRenderer):
 
         return ET.ElementTree(root)
 
-        

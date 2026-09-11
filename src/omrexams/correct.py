@@ -16,6 +16,7 @@ import logging
 from collections import Counter
 from itertools import combinations
 import img2pdf
+import json
 from pypdf import PdfReader, PdfWriter
 from tinydb import TinyDB, Query
 from shutil import copy2, rmtree
@@ -36,16 +37,17 @@ def decode_answers(answers, permutation):
 
 class Correct:
     """
-    This class will operate on a directory with a set of pages and perform the correction 
+    This class will operate on a directory with a set of pages and perform the correction
     according to the information stored in the qrcodes
     """
-    def __init__(self, sorted, corrected, data_filename, resolution, compression, use_page_answers=False):
+    def __init__(self, sorted, corrected, data_filename, resolution, compression, use_page_answers=False, progress_callback=None):
         self.sorted = sorted
         self.corrected = corrected
         self.data_filename = data_filename
         self.resolution = resolution
         self.compression = compression
         self.use_page_answers = use_page_answers
+        self.progress_callback = progress_callback
 
     def correct(self):
         logger.info('Creating and preparing tmp directory')
@@ -78,6 +80,8 @@ class Correct:
                 self.results_mutex.acquire()
                 self.task_done.wait_for(lambda: prev <= self.results.value)
                 bar.update(self.results.value - prev)
+                if self.progress_callback:
+                    self.progress_callback(self.results.value, files, 'Correcting')
                 prev = self.results.value
                 self.results_mutex.release()
         click.secho('Correction finished', fg='red', underline=True)
@@ -91,34 +95,49 @@ class Correct:
             for w in watch:
                 filename = os.path.basename(w[0])
                 filename = os.path.join('tmp', ".".join(filename.split(".")[:-1]) + ".jpg")
-                click.secho(f'\t{filename} {w[1]}', fg='yellow')   
+                click.secho(f'\t{filename} {w[1]}', fg='yellow')
+        self.watch_results = watch
         # Collecting all corrected exams into a single pdf file
         click.secho("Collecting all corrected exams into a single pdf file", fg="green")
         files = sorted(glob.glob(os.path.join('tmp', "*.jpg")))
         output_pdf = PdfWriter()
         old_student_id = None
+        student_pages = {}
         with click.progressbar(length=len(files), label="Merging corrections",
                                bar_template='%(label)s |%(bar)s| %(info)s',
                                fill_char=click.style(u'█', fg='cyan'),
                                empty_char=' ', show_pos=True) as bar:
             for i, filename in enumerate(files):
                 with io.BytesIO() as f:
-                    f.write(img2pdf.convert(filename))              
+                    f.write(img2pdf.convert(filename))
                     f.seek(0)
-                    student_id = os.path.basename(filename).split("-")[0]  
-                    if student_id != old_student_id:                
+                    student_id = os.path.basename(filename).split("-")[0]
+
+                    if "_wide.jpg" in filename:
+                        if student_id not in student_pages:
+                            student_pages[student_id] = []
+                        student_pages[student_id].append(i + 1)  # 1-indexed pages for react-pdf
+
+                    if student_id != old_student_id:
                         output_pdf.append(PdfReader(f, strict=False), outline_item=f'Student {student_id}')
                         old_student_id = student_id
                     else:
                         output_pdf.append(PdfReader(f, strict=False))
                 bar.update(1)
+                if self.progress_callback:
+                    self.progress_callback(i + 1, len(files), "Merging corrections")
         click.secho("Writing pdf file", fg="green")
         with open(self.corrected, 'wb') as f:
             output_pdf.write(f)
+        json_dir = os.path.join(os.path.dirname(self.corrected), "sidecar")
+        os.makedirs(json_dir, exist_ok=True)
+        json_path = os.path.join(json_dir, os.path.basename(self.corrected) + '.json')
+        with open(json_path, 'w') as f:
+            json.dump(student_pages, f)
 
         # TODO: seems not to work, to be tested (the pages with images are rendered as blank files)
         # Marking collected pdf with the student_id
-        
+
         #with open(self.corrected + '.tmp' + '.pdf', 'rb') as f:
         #     input_pdf = PdfReader(f, strict=False)
         #     if len(files) != len(input_pdf.pages):
@@ -130,7 +149,15 @@ class Correct:
         # with open(self.corrected, 'wb') as f:
         #     output_pdf.write(f)
         # TODO: remove tmp file
-        if (click.prompt("Remove temporary image files and directory tmp?", type=bool, default='y' if delete_default else 'n')):
+        remove_tmp = delete_default
+        try:
+            import sys
+            if sys.stdin and sys.stdin.isatty():
+                remove_tmp = click.prompt("Remove temporary image files and directory tmp?", type=bool, default='y' if delete_default else 'n')
+        except EOFError:
+            pass
+
+        if remove_tmp:
             for filename in files:
                 os.remove(filename)
             os.rmdir('tmp')
@@ -144,44 +171,52 @@ class Correct:
                 students.add(item['student_id'])
             Correction = Query()
             for student in students:
-                data[student] = { 'correct_answers': [], 'given_answers': [] }
+                data[student] = { 'correct_answers': [], 'given_answers': [], 'doubtful': [] }
                 results = table.search(Correction.student_id == student)
                 results = sorted(results, key=lambda r: int(r['page']))
                 for page in results:
                     data[student]['correct_answers'] += list(map(list, page['correct_answers']))
                     data[student]['given_answers'] += list(map(list, page['detected_answers']))
+                    if 'doubtful' in page:
+                        data[student]['doubtful'] += page['doubtful']
+                    else:
+                        data[student]['doubtful'] += [False] * len(page['detected_answers'])
             if 'correction' in db2.tables():
                 db2.drop_table('correction')
             table = db2.table('correction')
             for student in data:
-                table.insert({ 'student_id': student, **data[student] })   
+                table.insert({ 'student_id': student, **data[student] })
             db2.drop_table('statistics')
-            statistics = db2.table('statistics')    
-            Statistics = Query()       
+            statistics = db2.table('statistics')
+            Statistics = Query()
             # check consistency of correct answers (apriori/encoded)
             for exam in db2.table('exams').all():
                 data = table.get(Correction.student_id == exam['student_id'])
-                if data is not None and any(set(d) != set(e) for d, e in zip(data['correct_answers'], exam['answers'])):                    
+                if data is not None and any(set(d) != set(e) for d, e in zip(data['correct_answers'], exam['answers'])):
                     for i, (d, e) in enumerate(zip(data['correct_answers'], exam['answers'])):
                         if set(e) != set(d):
-                            message = f"Warning: correct answers in {self.data_filename} for student {exam['student_id']}, question {i + 1} do not match with those encoded in the exam sheets: {set(d)} in the sheet, {set(e)} in db"
+                            message = f"Warning: correct answers in {self.data_filename} for student {exam['student_id']} / {exam['fullname']}, question {i + 1} do not match with those encoded in the exam sheets: {set(d)} in the sheet, {set(e)} in db"
                             click.secho(message, fg="yellow")
                 elif data is None:
-                    continue               
+                    continue
                 for i, q in enumerate(exam['questions']):
                     question = statistics.get((Statistics.question_file == q[0]) & (Statistics.index == q[1]))
-                    given_answer = decode_answers(data['given_answers'][i], q[3])
-                    correct_answer = decode_answers(data['correct_answers'][i], q[3])
+                    try:
+                        given_answer = decode_answers(data['given_answers'][i], q[3])
+                        correct_answer = decode_answers(data['correct_answers'][i], q[3])
+                    except IndexError:
+                        click.secho(f"Error decoding answers for student {exam['student_id']} / {exam['fullname']}, question {i + 1}. Given: {data['given_answers']} / Correct: {data['correct_answers']}", fg="red", err=True)
+                        break
 
                     if question is None:
-                        question = { 
-                            'question_file': q[0], 
-                            'index': q[1], 
-                            'answers': [0] * len(q[3]), 
+                        question = {
+                            'question_file': q[0],
+                            'index': q[1],
+                            'answers': [0] * len(q[3]),
                             'correct_answers': correct_answer,
                             'total': 0,
-                            'incorrect': 0, 
-                            'correct': 0, 
+                            'incorrect': 0,
+                            'correct': 0,
                             'partially_correct': 0,
                             'unanswered': 0
                         }
@@ -190,34 +225,35 @@ class Correct:
                         question['correct'] += 1
                     elif any(c and g == c for g, c in zip(given_answer, correct_answer)):
                         question['partially_correct'] += 1
-                    if any(not c and g != c for g, c in zip(given_answer, correct_answer)): 
-                        question['incorrect'] += 1                     
+                    if any(not c and g != c for g, c in zip(given_answer, correct_answer)):
+                        question['incorrect'] += 1
                     if not any(g for g in given_answer):
                         question['unanswered'] += 1
                     for i in range(len(given_answer)):
                         if given_answer[i]:
-                            question['answers'][i] += 1 
+                            question['answers'][i] += 1
                     statistics.upsert(question, (Statistics.question_file == q[0]) & (Statistics.index == q[1]))
         click.secho("Removing temporary files", fg="green")
         os.remove(f"{self.data_filename}.tmp")
-                        
-        
-    def worker_main(self):    
+
+
+    def worker_main(self):
         while True:
             filename = self.tasks_queue.get()
             if filename is None:
                 break
             try:
-                detected_answers, correct_answers = self.process(filename)
-                if correct_answers: # probably no question in current file           
+                detected_answers, correct_answers, doubtful = self.process(filename)
+                if correct_answers: # probably no question in current file
                     *student, page = ".".join(os.path.basename(filename).split(".")[:-1]).split("-")
-                    # this is due because of old-style matriculation numbers
+                    # this is due to old-style matriculation numbers
                     student = "-".join(student)
                     self.results_mutex.acquire()
-                    self.append_correction(student, page, list(map(list, detected_answers)), list(map(list, correct_answers)))
+                    self.append_correction(student, page, list(map(list, detected_answers)), list(map(list, correct_answers)), doubtful)
                     self.results_mutex.release()
             except Exception as e:
                 click.secho(f"\nIn file {filename}\n" + str(e), fg="yellow")
+                self.watch_queue.put((filename, -1))
             finally:
                 self.results_mutex.acquire()
                 self.results.value += 1
@@ -232,22 +268,22 @@ class Correct:
         if metadata.get('rotated', False):
             image = cv2.rotate(image, cv2.ROTATE_180)
 
-        if metadata['range'] == (0, 0): # no question and markers in current page
-            self.write(filename, image)
+        if metadata['range'] == (0, 0): # no questions and markers on current page
+            self.write(filename, image, is_wide=False)
             return [], []
         tl, br = metadata['top_left'], metadata['bottom_right']
         # prepare roi
-        p0 = np.round(np.dot(metadata['p0'], metadata['scaling'])).astype(int) + tl 
-        p1 = np.round(np.dot(metadata['p1'], metadata['scaling'])).astype(int) + tl        
+        p0 = np.round(np.dot(metadata['p0'], metadata['scaling'])).astype(int) + tl
+        p1 = np.round(np.dot(metadata['p1'], metadata['scaling'])).astype(int) + tl
         roi_width = p1[0] - p0[0]
         roi_height = p1[1] - p0[1]
-        # this fix was needed since sometimes the roi was too close to objects and some detector did not work
+        # this fix was needed since sometimes the roi was too close to objects and some detectors did not work
         expand_x = int(roi_width * 0.05 / 2)
         expand_y = 0 #int(roi_height * 0.05 / 2)
         p0 = np.array([max(0, p0[0] - expand_x), max(0, p0[1] - expand_y)])
         p1 =  np.array([min(image.shape[1], p1[0] + expand_x), min(image.shape[0], p1[1] + expand_y)])
-        roi = image[p0[1]:p1[1], p0[0]:p1[0]] 
-        cv2.rectangle(image, tuple(map(int, p0 - offset)), tuple(map(int, p1 + offset)), BLUE, 3)        
+        roi = image[p0[1]:p1[1], p0[0]:p1[0]]
+        cv2.rectangle(image, tuple(map(int, p0 - offset)), tuple(map(int, p1 + offset)), BLUE, 3)
 
         page_answers = None
         if self.data_filename and self.use_page_answers:
@@ -257,37 +293,34 @@ class Correct:
                 if len(exam) > 0:
                     page_answers = exam[0]['answers'][metadata['range'][0] - 1:metadata['range'][1]]
         # contour detection
-        correction = [None] * 4    
+        correction = [None] * 4
+        masks = [None] * 4
         try:
             binary, circles, empty_circles = Correct.detect_circles_edges(roi, metadata)
-            # process result        
-            correction[0], mask = Correct.process_circles(roi, binary, circles, empty_circles, metadata, page_answers)
-            image = Correct.add_superimposed(image, mask, roi, p0, p1, 'Contour')
+            # process result
+            correction[0], masks[0] = Correct.process_circles(roi, binary, circles, empty_circles, metadata, page_answers)
         except Exception as e:
             click.secho(f"\nFailed Contour Detection for {filename}", fg="yellow")
             click.echo(str(e))
         # blob detection
         # TODO: temporarily disabled, seems to have some troubles that need further investigation
         try:
-            binary, circles, empty_circles = Correct.detect_circles_blob(roi, metadata)            
-            correction[1], mask = Correct.process_circles(roi, binary, circles, empty_circles, metadata, page_answers)            
-            image = Correct.add_superimposed(image, mask, roi, p0, p1, 'Blob')
+            binary, circles, empty_circles = Correct.detect_circles_blob(roi, metadata)
+            correction[1], masks[1] = Correct.process_circles(roi, binary, circles, empty_circles, metadata, page_answers)
         except Exception as e:
             click.secho(f"\nFailed Blob for {filename}", fg="yellow")
             click.echo(f"{e}")
         # laplacian detection
         try:
             binary, circles, empty_circles = Correct.detect_circles_laplacian(roi, metadata)
-            correction[2], mask = Correct.process_circles(roi, binary, circles, empty_circles, metadata, page_answers)
-            image = Correct.add_superimposed(image, mask, roi, p0, p1, 'Laplacian')
+            correction[2], masks[2] = Correct.process_circles(roi, binary, circles, empty_circles, metadata, page_answers)
         except Exception as e:
             click.secho(f"Failed Laplacian for {filename}", fg="yellow")
             click.echo(str(e))
         # hough detection
         try:
             binary, circles, empty_circles = Correct.detect_circles_hough(roi, metadata)
-            correction[3], mask = Correct.process_circles(roi, binary, circles, empty_circles, metadata, page_answers)
-            image = Correct.add_superimposed(image, mask, roi, p0, p1, 'Hough')
+            correction[3], masks[3] = Correct.process_circles(roi, binary, circles, empty_circles, metadata, page_answers)
         except Exception as e:
             click.secho(f"Failed Hough for {filename}", fg="yellow")
             click.echo(f"{e}")
@@ -304,7 +337,7 @@ class Correct:
         #     while len(idxs) > 0:
         #         last = len(idxs) - 1
         #         i = idxs[-1]
-        #         pick.append(i)
+        #         pick.append(s)
         #         suppress = [last]
         #         for pos in range(0, last):
         #             j = idxs[pos]
@@ -316,12 +349,12 @@ class Correct:
         #                 suppress.append(pos)
         #         idxs = np.delete(idxs, suppress)
         #     return boxes[pick]
-                    
+
         # ss = cv2.ximgproc.segmentation.createSelectiveSearchSegmentation()
-        # scale = 300 / roi.shape[1] 
+        # scale = 300 / roi.shape[1]
         # tw, th = int(roi.shape[1] * scale), int(roi.shape[0] * scale)
         # ss.setBaseImage(cv2.resize(roi, (tw, th)))
-        # ss.switchToSingleStrategy() 
+        # ss.switchToSingleStrategy()
         # rects = non_max_suppression(ss.process())
         # for i, rect in enumerate(rects):
         #     if i < 1000:
@@ -330,37 +363,67 @@ class Correct:
         #         y = y + p0[1]
         #         cv2.rectangle(image, (x, y), (x + w, y + h), RED, 1, cv2.LINE_AA)
 
-        majority, correct = self.majority_correction(filename, correction)  
-        given_text = f"Given answers: {' '.join(','.join(a) for a in majority)}"
-        correct_text = f"Correct answers: {' '.join(','.join(a) for a in correct)}"
-        (width, height), _ =  cv2.getTextSize(given_text, cv2.FONT_HERSHEY_SIMPLEX, 1, 3)
-        cv2.putText(image, given_text, (metadata['bottom_right'][0] // 4, metadata['bottom_right'][1] - 4 * height), cv2.FONT_HERSHEY_SIMPLEX, 1, MAGENTA, 3)
-        cv2.putText(image, correct_text, (metadata['bottom_right'][0] // 4, metadata['bottom_right'][1] - height), cv2.FONT_HERSHEY_SIMPLEX, 1, BLUE, 3)
-        self.write(filename, image)
+        majority, correct, stats, num_algorithms, doubtful = self.majority_correction(filename, correction)
 
-        return majority, correct
-        
+        image = Correct.add_stats_panel(image, stats, majority, correct, num_algorithms, p0, p1)
+
+        if masks[0] is not None:
+             image = Correct.add_superimposed(image, masks[0], roi, p0, p1, 'Contour')
+        if masks[1] is not None:
+             image = Correct.add_superimposed(image, masks[1], roi, p0, p1, 'Blob')
+        if masks[2] is not None:
+             image = Correct.add_superimposed(image, masks[2], roi, p0, p1, 'Laplacian')
+        if masks[3] is not None:
+             image = Correct.add_superimposed(image, masks[3], roi, p0, p1, 'Hough')
+
+        # Written given and correct answers removed as per request
+        self.write(filename, image, is_wide=True)
+
+        return majority, correct, doubtful
+
     def majority_correction(self, filename, correction):
         correction = list(filter(lambda c: c is not None, correction))
         correct_answers = list(map(lambda c: c[1], correction[0]))
-        correction = [list(map(lambda c: c[0], correction[i])) for i in range(len(correction))]
-        if not all(len(c) == len(correct_answers) for c in correction):
-            raise RuntimeError("Uneven number of answers (not matching with the correct ones)")
+
         majority = []
+        stats = []
+        doubtful = []
         span = len(correct_answers)
+        num_algos = len(correction)
+
         for i in range(span):
+            avg_areas = {}
+            for opt in "ABCDE":
+                total = 0.0
+                count = 0
+                for c in correction:
+                    if len(c) > i and len(c[i]) > 2:
+                        areas = c[i][2]
+                        if opt in areas:
+                            total += areas[opt]
+                            count += 1
+                if count > 0:
+                    avg_areas[opt] = total / count
+                else:
+                    avg_areas[opt] = 0.0
+            stats.append(avg_areas)
+
             counter = Counter()
             for c in correction:
-                for a in c[i]:
+                for a in c[i][0]:
                     counter[a] += 1
             tmp = []
             for a in counter:
-                if counter[a] >= len(correction) / 2:
+                if counter[a] >= num_algos / 2:
                     tmp.append(a)
-            if all(c1[i] != c2[i] for c1, c2 in combinations(correction, 2)):
+            if all(c1[i][0] != c2[i][0] for c1, c2 in combinations(correction, 2)):
                 self.watch_queue.put((filename, i))
-            majority.append(set(tmp))                        
-        return majority, correct_answers
+                doubtful.append(True)
+            else:
+                doubtful.append(False)
+            majority.append(set(tmp))
+
+        return majority, correct_answers, stats, num_algos, doubtful
 
     @staticmethod
     def add_superimposed(image, mask, roi, p0, p1, method):
@@ -370,23 +433,114 @@ class Correct:
         image[p0[1]:p1[1], prev_x:prev_x + superimposed.shape[1]] = superimposed
         cv2.putText(image, method, (prev_x, p0[1]), cv2.FONT_HERSHEY_SIMPLEX, 1, BLUE, 3)
         return image
-    
-    def write(self, filename, image):
+
+    @staticmethod
+    def add_stats_panel(image, stats, majority, correct_ans, num_algorithms, p0, p1):
+        panel_width = 800
+        prev_x = image.shape[1]
+        image = cv2.copyMakeBorder(image, 0, 0, 0, panel_width, cv2.BORDER_CONSTANT, value=WHITE)
+
+        start_x = prev_x + 20
+
+        cv2.putText(image, "Statistiche", (start_x, max(40, p0[1] - 40)), cv2.FONT_HERSHEY_SIMPLEX, 1.6, BLACK, 3)
+
+        roi_height = p1[1] - p0[1]
+        num_questions = len(stats)
+
+        for i in range(num_questions):
+            counts = stats[i]
+
+            # Show at least up to D, if there is E it is added
+            max_opt = 'D'
+            if 'E' in correct_ans[i] or 'E' in majority[i] or counts.get('E', 0.0) > 0.0:
+                max_opt = 'E'
+
+            options_to_show = [chr(c) for c in range(ord('A'), ord(max_opt) + 1)]
+
+            sugg_str = "".join(sorted(majority[i])) if majority[i] else "Nessuna"
+            corr_str = "".join(sorted(correct_ans[i])) if correct_ans[i] else "Nessuna"
+            sugg_color = GREEN if sugg_str == corr_str else RED
+
+            row_y_center = p0[1] + int((i + 0.5) * (roi_height / num_questions))
+            font_scale = 1.3
+            font_thick = 2
+
+            # Top row (multicolor: black text, % blue)
+            curr_x = start_x
+            y_pos_1 = row_y_center - 15
+
+            part0 = f"Q{i+1}: "
+            cv2.putText(image, part0, (curr_x, y_pos_1), cv2.FONT_HERSHEY_SIMPLEX, font_scale, BLACK, font_thick)
+            (w, h), _ = cv2.getTextSize(part0, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thick)
+            curr_x += w
+
+            for idx, option in enumerate(options_to_show):
+                raw_val = counts.get(option, 0.0)
+                adjusted_val = (raw_val - 0.25) / 0.75
+                pct = int(max(0.0, min(1.0, adjusted_val)) * 100)
+
+                # Letter
+                letter_str = f"{option}:"
+                cv2.putText(image, letter_str, (curr_x, y_pos_1), cv2.FONT_HERSHEY_SIMPLEX, font_scale, BLACK, font_thick)
+                (w, h), _ = cv2.getTextSize(letter_str, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thick)
+                curr_x += w
+
+                # Percentage
+                pct_str = f"{pct}%"
+                cv2.putText(image, pct_str, (curr_x, y_pos_1), cv2.FONT_HERSHEY_SIMPLEX, font_scale, BLUE, font_thick)
+                (w, h), _ = cv2.getTextSize(pct_str, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thick)
+                curr_x += w
+
+                # Comma (except for the last one)
+                if idx < len(options_to_show) - 1:
+                    comma_str = ", "
+                    cv2.putText(image, comma_str, (curr_x, y_pos_1), cv2.FONT_HERSHEY_SIMPLEX, font_scale, BLACK, font_thick)
+                    (w, h), _ = cv2.getTextSize(comma_str, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thick)
+                    curr_x += w
+
+            # Bottom row (multicolor)
+            curr_x = start_x
+            y_pos = row_y_center + 35
+
+            part1 = "   Suggerito: "
+            cv2.putText(image, part1, (curr_x, y_pos), cv2.FONT_HERSHEY_SIMPLEX, font_scale, BLACK, font_thick)
+            (w, h), _ = cv2.getTextSize(part1, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thick)
+            curr_x += w
+
+            part2 = sugg_str
+            cv2.putText(image, part2, (curr_x, y_pos), cv2.FONT_HERSHEY_SIMPLEX, font_scale, sugg_color, font_thick)
+            (w, h), _ = cv2.getTextSize(part2, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thick)
+            curr_x += w
+
+            part3 = " | Corretto: "
+            cv2.putText(image, part3, (curr_x, y_pos), cv2.FONT_HERSHEY_SIMPLEX, font_scale, BLACK, font_thick)
+            (w, h), _ = cv2.getTextSize(part3, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thick)
+            curr_x += w
+
+            part4 = corr_str
+            cv2.putText(image, part4, (curr_x, y_pos), cv2.FONT_HERSHEY_SIMPLEX, font_scale, GREEN, font_thick)
+
+        return image
+
+    def write(self, filename, image, is_wide=False):
         filename = os.path.join('tmp', os.path.basename(filename))
-        filename = ".".join(filename.split(".")[:-1]) + ".jpg"
-        # rescale to 72 dpi to save space
-        image = cv2.resize(image, None, fx=72.0 / self.resolution, fy=72.0 / self.resolution, interpolation=cv2.INTER_AREA)
+        filename = ".".join(filename.split(".")[:-1]) + ("_wide.jpg" if is_wide else ".jpg")
+        # rescale to 150 dpi to save space (previously 72 dpi)
+        # Using 150 provides a good balance between readability and file size
+        fx_fy = min(1.0, 150.0 / self.resolution)
+        image = cv2.resize(image, None, fx=fx_fy, fy=fx_fy, interpolation=cv2.INTER_AREA)
         cv2.imwrite(filename, image, [cv2.IMWRITE_JPEG_QUALITY, self.compression])
 
 
-    def append_correction(self, student, page, detected_answers, correct_answers):
+    def append_correction(self, student, page, detected_answers, correct_answers, doubtful):
         with TinyDB(f"{self.data_filename}.tmp") as db:
             table = db.table('correction')
-            data = { 
-                "student_id": student, 
-                "page": page, 
+            data = {
+                "student_id": student,
+                "page": page,
                 "detected_answers": detected_answers,
-                "correct_answers": correct_answers
+                "correct_answers": correct_answers,
+                "doubtful": doubtful
             }
             table.insert(data)
 
@@ -406,7 +560,7 @@ class Correct:
         return np.count_nonzero(np.ma.masked_array(enclosing_box, mask).ravel())
 
     @staticmethod
-    def detect_circles_edges(roi, metadata, area_threshold=0.45):    
+    def detect_circles_edges(roi, metadata, area_threshold=0.45):
 
         # in order to detect the contours in the roi, a blur and an adaptive thresholding is used
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if len(roi.shape) > 2 else roi
@@ -423,13 +577,13 @@ class Correct:
         empty_circles = []
         scaling = metadata['scaling']
         bubble_radius = np.max(np.dot(metadata['bsize'], scaling) / 2.0)
-        # for each detcted contour
+        # for each outlined contour
         for contour in contours:
             perimeter = cv2.arcLength(contour, True)
             # try to simplify it
             approx = cv2.approxPolyDP(contour, 0.01 * perimeter, True)
             # and check whether it is a candidate to be a circle (in that case append it)
-            if len(approx) >= 8:                        
+            if len(approx) >= 8:
                 (cx, cy), radius = cv2.minEnclosingCircle(contour)
                 if 0.75 * bubble_radius <= radius <= 1.8 * bubble_radius:
                     if Correct.circle_filled_area(binary, (int(cx), int(cy), int(radius))) > area_threshold * bubble_radius * bubble_radius * math.pi:
@@ -443,10 +597,10 @@ class Correct:
     def circle_intersection_area(c1, c2):
         r1, r2 = c1[2], c2[2]
         d = np.linalg.norm(np.array(c1[:2]) - np.array(c2[:2])) + np.finfo(float).eps
-        if r1 < r2: # ensure that r1 >= r2    
+        if r1 < r2: # ensure that r1 >= r2
             r1, r2 = r2, r1
         if (d > r1 + r2):
-            return 0.0        
+            return 0.0
         if d < r1 - r2: # the circle whose radius is r2 is contained in the circle whose radius is r1
             return math.pi * r2 * r2
         r1s = r1 * r1
@@ -456,7 +610,7 @@ class Correct:
         return r1s * math.acos(d1 / r1) - d1 * math.sqrt(r1s - d1 * d1) + \
             r2s * math.acos(d2 / r2) - d2 * math.sqrt(r2s - d2 * d2)
 
-    @staticmethod 
+    @staticmethod
     def highlight_circle(target, c, color, offset=5, **kwargs):
         if "shape" in kwargs and kwargs["shape"] == "rectangle":
             return cv2.rectangle(target, tuple(np.array(c[:2]) - (c[2] + offset)), tuple(np.array(c[:2]) + (c[2] + offset)), color, 3)
@@ -464,7 +618,7 @@ class Correct:
             return cv2.circle(target, c[:2], c[2] + offset, color, 3)
 
     @staticmethod
-    def process_circles(roi, binary, circles, empty_circles, metadata, page_answers=None, offset=5, xdistance=1.25):                        
+    def process_circles(roi, binary, circles, empty_circles, metadata, page_answers=None, offset=5, xdistance=1.25):
         mask = np.ones((*roi.shape[:2], 3), np.uint8) * 255
         # identify the reference_circles first, assuming the leftmost/topmost is the reference one
         circles = sorted(circles)
@@ -473,27 +627,27 @@ class Correct:
         reference_circles = [c for c in circles if abs(c[0] - pivot[0]) <= pivot[2]]
         reference_radius = np.max(np.dot(metadata['bsize'], metadata['scaling']) / 2)
         reference_area = reference_radius * reference_radius * math.pi
-        # all the other are the answer circles
+        # all the others are the answer circles
         other_circles = [c for c in circles if abs(c[0] - pivot[0]) > pivot[2]]
         # highlight the reference circles
         for c in reference_circles:
             Correct.highlight_circle(mask, c, CYAN)
             filled_area = Correct.circle_filled_area(binary, c) / reference_area
             #text = f"{filled_area:.0%}"
-            #cv2.putText(mask, text, tuple(np.array(c[:2]) - np.array([c[2], c[2] + 2 * offset])), 
+            #cv2.putText(mask, text, tuple(np.array(c[:2]) - np.array([c[2], c[2] + 2 * offset])),
             #            cv2.FONT_HERSHEY_SIMPLEX, 0.8, CYAN, 3)
         # maintain the information as a mapping between the reference circle and all the
         # answer circles on the same row
         answer_circles = {c: [] for c in reference_circles}
         # process the answer circles
         for c in other_circles:
-            # find the closest reference circle, w.r.t. y coordinate
+            # find the closest reference circle, w.r.t. y coordinates
             ydist = np.fromiter((abs(c[1] - rc[1]) for rc in reference_circles), int)
             reference_circle = reference_circles[np.argmin(ydist)]
             answer_circles[reference_circle].append(tuple(list(c) + [True]))
         # and the empty ones (they are meaningful only for edge detection)
         for c in empty_circles:
-            # find the closest reference circle, w.r.t. y coordinate
+            # find the closest reference circle, w.r.t. y coordinates
             ydist = np.fromiter((abs(c[1] - rc[1]) for rc in reference_circles), int)
             reference_circle = reference_circles[np.argmin(ydist)]
             answer_circles[reference_circle].append(tuple(list(c) + [False]))
@@ -503,17 +657,17 @@ class Correct:
         if len(reference_circles) != len(metadata['page_correction']):
             raise RuntimeError(f"Warning: Number of detected answers {len(reference_circles)} ({metadata['student_id']}-{metadata['page']}) and number of answers {len(metadata['page_correction'])} do not match (debugging: radius {reference_radius:.02f})")
         # go through the questions (reference circles) and check the answers
-        correction = []            
-        for i, ac in enumerate(answer_circles):  
+        correction = []
+        for i, ac in enumerate(answer_circles):
             # This will override the coded page corrections if provided
             # it is needed to force correction when answers are corrected
             # in the questions database through the update-corrected command
-            if page_answers is None:       
+            if page_answers is None:
                 correct_res = set(metadata['page_correction'][i])
             else:
                 correct_res = set(page_answers[i])
             all_res = set()
-            answers_res = set()   
+            answers_res = set()
             # now sort again answer circles from the leftmost to the rightmost
             # and check whether there are missing ones (e.g., due to a “wrong” filling)
             # each circle has a distance ratio specified by the xdistance parameter from the
@@ -522,38 +676,38 @@ class Correct:
             given_answers = sorted(ac[1])
             for c in given_answers:
                 Correct.highlight_circle(mask, c, ORANGE, shape="rectangle")
-            # TODO: assumption that the line of answers is almost horizontal, it could be detected
+            # TODO: assuming that the line of answers is almost horizontal, it could be detected
             #       another assumption is that the maximum number of answers is 10
             phantom_circles = []
             for j in range(1, 11):
                 # this is a phantom circle that should be present in the image
                 c = np.array(reference_circle[:2]) + [j * xdistance * 2 * reference_radius, 0]
-                c = tuple(list(c) + [reference_radius]) 
+                c = tuple(list(c) + [reference_radius])
                 # check if the phantom circle is outside the roi image or there's nothing below the circle
                 # TODO: the first check is not working anymore, consider fixing it later
                 #if c[0] + c[2] > binary.shape[0] or Correct.circle_filled_area(binary, c) < 0.1 * reference_area:
                 if Correct.circle_filled_area(binary, c) < 0.1 * reference_area:
                     break
                 phantom_circles.append(c)
-            
+
             # let's check if the phantom circles have a detected counterpart
             for a in given_answers:
                 distances = np.fromiter((np.linalg.norm(np.array(c[:2]) - np.array(a[:2])) for c in phantom_circles), float)
                 if len(distances) > 0:
                     closer_phantom_circle = np.argmin(distances)
                     if distances[closer_phantom_circle] < reference_radius:
-                        del phantom_circles[closer_phantom_circle]            
+                        del phantom_circles[closer_phantom_circle]
             for c in phantom_circles:
                 c = tuple(list(map(int, c)) + [False])
                 Correct.highlight_circle(mask, c, GRAY)
-                given_answers.append(c)                               
+                given_answers.append(c)
             given_answers = sorted(given_answers)
             for j, c in enumerate(given_answers):
                 r = chr(j + ord('A'))
                 all_res.add(r)
                 filled_area = Correct.circle_filled_area(binary, c) / reference_area
                 text = f"{filled_area:0>4.0%}"
-                cv2.putText(mask, text, tuple(np.array(c[:2]) - np.array([c[2], c[2] + 2 * offset])), 
+                cv2.putText(mask, text, tuple(np.array(c[:2]) - np.array([c[2], c[2] + 2 * offset])),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, MAGENTA, 2)
                 cv2.circle(mask, c[:2], c[2], alpha(YELLOW, 0.3), -1)
                 if c[3]:
@@ -579,20 +733,26 @@ class Correct:
             tmp = ("".join(sorted(a for a in answers_res)) if answers_res else "None")
             tmp += "/" + ("".join(sorted(a for a in correct_res)) if correct_res else "None")
             cv2.putText(mask, tmp, tuple(p), cv2.FONT_HERSHEY_SIMPLEX, 1, MAGENTA, 3)
-            correction.append((answers_res, correct_res))
+
+            filled_areas_dict = {}
+            for j, c in enumerate(given_answers):
+                r = chr(j + ord('A'))
+                filled_areas_dict[r] = Correct.circle_filled_area(binary, c) / reference_area
+
+            correction.append((answers_res, correct_res, filled_areas_dict))
         return correction, mask
 
     @staticmethod
     def detect_circles_blob(roi, metadata):
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if len(roi.shape) > 2 else roi
         gray = cv2.GaussianBlur(gray, (9, 9), 2)
-        
+
         params = cv2.SimpleBlobDetector_Params()
         scaling = metadata['scaling']
         bubble_radius = np.max(np.dot(metadata['bsize'], scaling) / 2.0)
         params.minDistBetweenBlobs = bubble_radius * 2.0
         #params.filterByColor = False
-        #blobColor = 0 
+        #blobColor = 0
 
         # Filter by Area.
         params.filterByArea = True
@@ -614,25 +774,25 @@ class Correct:
         # Filter by Convexity
         params.filterByConvexity = False
         #params.minConvexity = 0.95
-        
+
         detector = cv2.SimpleBlobDetector_create(params)
         keypoints = detector.detect(gray)
         if keypoints is not None:
             circles = list(map(lambda k: (int(k.pt[0]), int(k.pt[1]), int(bubble_radius)), keypoints))
         else:
             circles = []
-        binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+        binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                     cv2.THRESH_BINARY_INV, 11, 2)
         binary += cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)[1]
-        
+
         return binary, circles, []
 
     @staticmethod
     def detect_circles_laplacian(roi, metadata):
         def round_up_to_odd(f):
-            return math.ceil(f) // 2 * 2 + 1 
-        
-        def collapse_identical_circles(candidates, radius, threshold=0.3):            
+            return math.ceil(f) // 2 * 2 + 1
+
+        def collapse_identical_circles(candidates, radius, threshold=0.3):
             fusion = True
             next_centers = set(candidates)
             while fusion:
@@ -640,14 +800,14 @@ class Correct:
                 prev_centers = next_centers
                 next_centers = set()
                 done = set()
-                for c1 in prev_centers:  
+                for c1 in prev_centers:
                     if c1 in done:
-                        continue              
+                        continue
                     identical = []
                     done.add(c1)
                     for c2 in prev_centers - done:
                         if np.linalg.norm(np.array(c1[:2]) - np.array(c2[:2])) < threshold * radius:
-                            identical.append(c2)                
+                            identical.append(c2)
                     if identical:
                         fusion = True
                         for c in identical + [c1]:
@@ -657,44 +817,44 @@ class Correct:
                         next_centers.add(tuple(np.mean(identical + [c1], axis=0)))
                     else:
                         next_centers.add(c1)
-            return next_centers                                                                   
+            return next_centers
 
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if len(roi.shape) > 2 else roi
         gray = cv2.GaussianBlur(gray, (11, 11), 2)
-        
+
         s = np.max(np.dot(metadata['bsize'], metadata['scaling']) / 2.0)
 
-        s1 = s / 1.4142 # stretto
+        s1 = s / 1.4142 # strict
         # some denoising
         im1 = cv2.GaussianBlur(gray, (round_up_to_odd(1 + 5 * s1), round_up_to_odd(1 + 5 * s1)), s1)
 
-        s2 = s * 1.4142 #largo
+        s2 = s * 1.4142 #wide
         # some denoising
         im2 = cv2.GaussianBlur(gray, (round_up_to_odd(1 + 5 * s2), round_up_to_odd(1 + 5 * s2)), s2)
 
-        response = im2.astype(float) - im1.astype(float)  #largo - stretto
+        response = im2.astype(float) - im1.astype(float)  #wide - narrow
         response = cv2.normalize(response, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8UC1)
-        
+
         y, x = np.ogrid[-s // 2 : s // 2, -s // 2 : s // 2]
-        mask = x * x + y * y <= s * s    
-        
-        peak_indexes = peak_local_max(response, footprint=mask, #min_distance=s, 
-                                      exclude_border=False, threshold_rel=0.5) 
+        mask = x * x + y * y <= s * s
+
+        peak_indexes = peak_local_max(response, footprint=mask, #min_distance=s,
+                                      exclude_border=False, threshold_rel=0.5)
         maxima = np.zeros_like(response, dtype=int)
-        maxima[tuple(peak_indexes.T)] = 255        
+        maxima[tuple(peak_indexes.T)] = 255
         maxima = cv2.normalize(maxima, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8UC1)
-        
+
         contours, _ = cv2.findContours(maxima, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
         candidates = []
         for contour in contours:
             (cx, cy), _ = cv2.minEnclosingCircle(contour)
             candidates.append((cx, cy, s))
         circles = list(map(lambda c: tuple(map(int, c)), collapse_identical_circles(candidates, s)))
-            
-        binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+
+        binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                     cv2.THRESH_BINARY_INV, 11, 2)
-        binary += cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)[1]    
-        
+        binary += cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)[1]
+
         return binary, circles, []
 
     @staticmethod
@@ -723,7 +883,7 @@ class Correct:
 
         candidates = list(map(tuple, np.round(candidates[0, :]).astype("int")))
 
-        binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+        binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                     cv2.THRESH_BINARY_INV, 11, 2)
         binary += cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)[1]
 
@@ -735,5 +895,5 @@ class Correct:
                 circles.append(c)
             else:
                 empty_circles.append(c)
-        
+
         return binary, circles, empty_circles

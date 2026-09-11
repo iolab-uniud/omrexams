@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel", "pyqt_distutils", "sphinx"]
+requires = ["setuptools>=61.0", "wheel", "sphinx"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -32,6 +32,7 @@ dependencies = [
     "opencv-python",
     "opencv-contrib-python",
     "openpyxl",
+    "xlsxwriter",
     "scikit-image",
     "tinydb",
     "wand",
@@ -41,8 +42,6 @@ dependencies = [
     "wheel",
     "mistletoe==0.9.0",
     "pypdf",
-    "PySide6",
-    "pyqtdarktheme",
     "markdownify",
     "markdown",
     "markdown-checklists",
@@ -61,7 +60,6 @@ dev = [
     "mypy>=0.910",           # For static type checking
     "vulture>=2.3",          # For detecting unused code
     "pipreqs>=0.4.10",        # For generating requirements from imports
-    "pyqt-distutils",
     "PyInstaller",
     "Sphinx",
     "sphinx_rtd_theme"

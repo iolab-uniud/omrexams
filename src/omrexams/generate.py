@@ -63,14 +63,16 @@ def make_book(pages, booklet_length):
 
 class Generate:
     """
-    This class is responsible of creating the individual exams for a number of students 
+    This class is responsible of creating the individual exams for a number of students
     or an overall testing document for checking the questions and their answers.
-    """    
+    """
 
-    def __init__(self, config, questions, output_prefix, test=False, paper='A4', students=None, exam_date=dt.now(), seed=42, split=None, folded=True, rotated=False):
+    def __init__(self, config, questions, output_prefix, test=False, paper='A4', students=None, exam_date=dt.now(), seed=42, split=None, folded=True, rotated=False, dyslexia_count=None, progress_callback=None):
         self.config = config
         self.questions_path = questions
         self.output_prefix = output_prefix
+        self.progress_callback = progress_callback
+        self.dyslexia_count = dyslexia_count
         self.test = test
         self.paper = paper.upper()
         if self.paper not in ('A4', 'A3'):
@@ -80,10 +82,11 @@ class Generate:
             self.output_list_filename = f"{output_prefix}.json"
             self.students = students or []
             self.exam_date = exam_date
-            self.topics = {}   
+            self.topics = {}
             self.seed = seed
             with TinyDB(self.output_list_filename) as db:
                 db.drop_table('metadata')
+                db.drop_table('exams')
                 db.table('metadata').insert({ 'seed': self.seed, 'generation_date': dt.now().strftime("%F") })
             self.folded = folded
             self.rotated = rotated
@@ -101,28 +104,28 @@ class Generate:
         return rules_expanded
 
     def load_questions(self, filename):
-        with open(filename, 'r') as f:
+        with open(filename, 'r', encoding='utf-8') as f:
             questions = list(filter(lambda q: not TITLE_RE.match(q) and not OPEN_QUESTION_RE.match(q), QUESTION_MARKER_RE.split(f.read())))
             return questions
 
     def load_open_questions(self, filename):
-        with open(filename, 'r') as f:
+        with open(filename, 'r', encoding='utf-8') as f:
             questions = list(filter(lambda q: OPEN_QUESTION_RE.match(q), QUESTION_MARKER_RE.split(f.read())))
             return questions
-    
+
     def load_topics(self, filename):
-        with open(filename, 'r') as f:            
+        with open(filename, 'r', encoding='utf-8') as f:
             questions_with_topics = filter(lambda q: TOPIC_RE.match(q), QUESTION_MARKER_RE.split(f.read()))
             topics = set()
             for q in questions_with_topics:
                 topics.add(TOPIC_RE.match(q).group(1))
             return topics
-    
+
     def process(self):
         if not self.test:
             self.generate_exams()
         else:
-            self.generate_test()    
+            self.generate_test()
 
     def generate_exams(self):
         rules = self.load_rules()
@@ -136,11 +139,21 @@ class Generate:
             logger.info('There are open questions')
         if os.path.exists('tmp'):
             rmtree('tmp')
-        os.mkdir('tmp')        
+        os.mkdir('tmp')
         with pkg_resources.path("omrexams.texmf", "omrexam.cls") as template_path:
             # Copy the file to the temporary directory
             click.secho(f'Copying omrexam.cls to tmp', fg='yellow')
             copy2(template_path, 'tmp')
+            qr_eclevel = self.config.get('exam', {}).get('qr_eclevel', 'H')
+            qr_size = '2.8cm' if qr_eclevel == 'H' else '2.5cm'
+            cls_path = os.path.join('tmp', 'omrexam.cls')
+            with open(cls_path, 'r', encoding='utf-8') as f:
+                cls_content = f.read()
+            cls_content = re.sub(r'\\setlength\{\\OMR@BarcodeWidth\}\{.*?\}', lambda m: f'\\setlength{{\\OMR@BarcodeWidth}}{{{qr_size}}}', cls_content)
+            cls_content = re.sub(r'\\setlength\{\\OMR@BarcodeHeight\}\{.*?\}', lambda m: f'\\setlength{{\\OMR@BarcodeHeight}}{{{qr_size}}}', cls_content)
+            cls_content = re.sub(r'eclevel=[LMQH]', f'eclevel={qr_eclevel}', cls_content)
+            with open(cls_path, 'w', encoding='utf-8') as f:
+                f.write(cls_content)
         click.secho(f'Generating {len(self.students)} exams (this may take a while)', fg='red', underline=True)
         with click.progressbar(length=len(self.students), label='Generating exams',
                                bar_template='%(label)s |%(bar)s| %(info)s',
@@ -152,9 +165,13 @@ class Generate:
             self.results = mp.Value('i', 0, lock=self.results_mutex)
             self.error = mp.Value('b', False, lock=self.results_mutex)
             for i, student in enumerate(self.students):
-                self.generate_tasks_queue.put((i, student))
+                is_dyslexic = False
+                if self.config.get('dyslexia', False):
+                    if self.dyslexia_count is None or i < self.dyslexia_count:
+                        is_dyslexic = True
+                self.generate_tasks_queue.put((i, student, is_dyslexic))
             for _ in range(mp.cpu_count()):
-                self.generate_tasks_queue.put((None, None))
+                self.generate_tasks_queue.put((None, None, None))
             pool = mp.Pool(mp.cpu_count(), self.worker_main_generate)
             pool.close()
             prev = 0
@@ -162,6 +179,8 @@ class Generate:
                 self.results_mutex.acquire()
                 self.generate_task_done.wait_for(lambda: prev <= self.results.value)
                 bar.update(self.results.value - prev)
+                if self.progress_callback:
+                    self.progress_callback(self.results.value, len(self.students), 'Generating exams')
                 prev = self.results.value
                 self.results_mutex.release()
 
@@ -169,37 +188,51 @@ class Generate:
         pdf_files = sorted(glob.glob(os.path.join('tmp', '*.pdf')))
         if self.split is not None:
             num_chunks = math.ceil(len(pdf_files) / self.split)
-            click.secho(f'Splitting output files every {self.split} exams, chunks {num_chunks}', fg='yellow')    
+            click.secho(f'Splitting output files every {self.split} exams, chunks {num_chunks}', fg='yellow')
             digits = max(1, len(str(num_chunks)))
             tasks = []
             for i in range(0, len(pdf_files), self.split):
                 tasks.append((f"{self.output_prefix}-{(i // self.split) + 1:0{digits}d}.pdf", pdf_files[i:i + self.split]))
 
-            chunksize = max(1, len(tasks) // mp.cpu_count())                
+            chunksize = max(1, len(tasks) // mp.cpu_count())
             with mp.Pool(mp.cpu_count()) as pool, click.progressbar(length=num_chunks, label='Chunks of exam files',
                                bar_template='%(label)s |%(bar)s| %(info)s',
                                fill_char=click.style(u'█', fg='cyan'),
-                               empty_char=' ', show_pos=True) as bar:  
+                               empty_char=' ', show_pos=True) as bar:
+                current_chunk = 0
                 for _ in pool.imap_unordered(partial(_collate_star, paper=self.paper, rotated=self.rotated, folded=self.folded), tasks, chunksize=chunksize):
                     bar.update(1)
+                    current_chunk += 1
+                    if self.progress_callback:
+                        self.progress_callback(current_chunk, num_chunks, 'Chunks of exam files')
         else:
             with click.progressbar(length=len(pdf_files), label='Exam files',
                                bar_template='%(label)s |%(bar)s| %(info)s',
                                fill_char=click.style(u'█', fg='cyan'),
-                               empty_char=' ', show_pos=True) as bar:  
+                               empty_char=' ', show_pos=True) as bar:
                 if self.paper == 'A4':
-                    Generate.collate_exams_a4(f"{self.output_prefix}.pdf", pdf_files, bar=bar)
+                    Generate.collate_exams_a4(f"{self.output_prefix}.pdf", pdf_files, bar=bar, progress_callback=self.progress_callback)
                 else:
-                    Generate.collate_exams_a3(f"{self.output_prefix}.pdf", pdf_files, bar=bar, folded=self.folded, rotated=self.rotated)
-        
+                    Generate.collate_exams_a3(f"{self.output_prefix}.pdf", pdf_files, bar=bar, folded=self.folded, rotated=self.rotated, progress_callback=self.progress_callback)
+
+
         if not self.error.value:
             click.secho('Removing tmp', fg='yellow')
-            rmtree('tmp')
+            # rmtree('tmp') # original row
+            for _ in range(5): # try 5 times
+                try:
+                    rmtree('tmp')
+                    break # if it has happened it exit the loop
+                except OSError:
+                    time.sleep(0.5) # wait 0.5 seconds than try again
+            else:
+                click.secho('Could not remove tmp directory, please remove it manually.', fg='red')
         click.secho('Finished', fg='red', underline=True)
+
 
     def worker_main_generate(self):
         while True:
-            task, student = self.generate_tasks_queue.get()
+            task, student, is_dyslexic = self.generate_tasks_queue.get()
             if task is None:
                 break
             logger.info(f'Started processing student {student[0]} {student[1]}')
@@ -213,26 +246,27 @@ class Generate:
             done = False
             try:
                 for _ in range(50):
-                    document, questions, answers = self.create_exam(student)
+                    document, questions, answers = self.create_exam(student, is_dyslexic)
                     digits = math.ceil(math.log10(len(self.students)))
                     f = f'{{:0{digits}d}}-{{}}-{{}}'
                     filename = os.path.join('tmp', f"{task:0{digits}d}-{student[0]}-{student[1].replace(' ', '_')}")
-                    document.generate_pdf(filepath=filename, 
-                                        compiler='latexmk', 
+                    document.generate_pdf(filepath=filename,
+                                        compiler='latexmk',
                                         compiler_args=['-xelatex', '-shell-escape'])
                     # get rid of the xdv file, if any
                     if os.path.exists(f"{filename}.xdv"):
                         os.remove(f"{filename}.xdv")
-                    # check the generated output in terms of pages 
+                    # check the generated output in terms of pages
                     # TODO: it should be done also in terms of the qrcode, number of questions, coherence of answers
                     with open(f"{filename}.pdf", 'rb') as f:
                         pdf_file = PdfReader(f, strict=False)
-                        if len(pdf_file.pages) <= self.config['exam'].get('page_limits', 2):
+                        limit = self.config['exam'].get('page_limits')
+                        if not limit or len(pdf_file.pages) <= int(limit):
                             done = True
-                            break                     
+                            break
                 if not done:
-                    click.secho(f"Couldn't get an exam with at most {self.config['exam'].get('page_limits', 2)} pages for student {student[0]} {student[1]}", fg='red', blink=True)
-                    logger.warning(f"Couldn't get an exam with at most {self.config['exam'].get('page_limits', 2)} pages for student {student[0]} {student[1]}")                        
+                    click.secho(f"Couldn't get an exam with at most {limit} pages for student {student[0]} {student[1]}", fg='red', blink=True)
+                    logger.warning(f"Couldn't get an exam with at most {limit} pages for student {student[0]} {student[1]}")
             except Exception as e:
                 raise e
                 print(e)
@@ -251,82 +285,113 @@ class Generate:
 
 
     @staticmethod
-    def collate_exams_a4(filename, pdf_files, bar=None):
-        # This is for A4 management            
+    def collate_exams_a4(filename, pdf_files, bar=None, progress_callback=None):
+        # This is for A4 management
         merger = PdfWriter()
         _blank = PdfWriter()
-        _blank.add_blank_page(**A4SIZE)    
+        _blank.add_blank_page(**A4SIZE)
         blank = io.BytesIO()
-        _blank.write(blank)   
-        for exam in pdf_files:
-            pdf = PdfReader(open(exam, 'rb'), strict=False)  
-            merger.append(pdf)
-            if len(pdf.pages) % 2 == 1:
-                merger.append(blank)
-            if bar:
-                bar.update(1)
-        with open(filename, 'wb') as f:
-            merger.write(f)
+        _blank.write(blank)
+
+        opened_files = [] # Track opened files
+
+        current_file = 0
+        try:
+            for exam in pdf_files:
+                f = open(exam, 'rb')
+                opened_files.append(f) # Save the file reference
+                pdf = PdfReader(f, strict=False)
+                merger.append(pdf)
+                if len(pdf.pages) % 2 == 1:
+                    merger.append(blank)
+                if bar:
+                    bar.update(1)
+                current_file += 1
+                if progress_callback:
+                    progress_callback(current_file, len(pdf_files), 'Collating exams (A4)')
+
+            with open(filename, 'wb') as f:
+                merger.write(f)
+        finally:
+            # FILE CLOSURE: Tell the OS to unlock the files
+            for f in opened_files:
+                f.close()
 
     @staticmethod
-    def collate_exams_a3(filename, pdf_files, folded=True, rotated=False, bar=None):
+    def collate_exams_a3(filename, pdf_files, folded=True, rotated=False, bar=None, progress_callback=None):
         # This is for A3 management
         writer = PdfWriter()
         a3page = None
-        for exam in pdf_files:
-            pdf = PdfReader(open(exam, 'rb'), strict=False)
-            a3page = PageObject.create_blank_page(**A3SIZE)        
-            rotate = False            
-            if folded:
-                # Create a booklet
-                sheets = math.ceil(len(pdf.pages) / 4) 
-                booklet = next(make_book(range(1, len(pdf.pages) + 1), sheets * 4))
-                left = True
-                for p in booklet:
-                    if p is not None:
-                        page = pdf.pages[p - 1]
-                    else:
-                        page = PageObject.create_blank_page(**A4SIZE)
-                    if left:
-                        # page left
-                        if rotated and rotate:
-                            transformation = Transformation().rotate(180).translate(A3SIZE['width'] / 2,  A3SIZE['height'])
-                        else:
-                            transformation = Transformation().translate(0, 0)
-                        left = False
-                    else:
-                        # page right
-                        if rotated and rotate:
-                            transformation = Transformation().rotate(180).translate(A3SIZE['width'], A3SIZE['height'])
-                        else:
-                            transformation = Transformation().translate(A3SIZE['width'] / 2, 0)
-                        left = True
-                    a3page.merge_transformed_page(page, transformation, expand=False) 
-                    if left:
-                        # add page 
-                        writer.add_page(a3page)
-                        a3page = PageObject.create_blank_page(**A3SIZE)  
-                        rotate = not rotate
-            else:
-                # normal A3, two A4 per A3
-                for p, page in enumerate(pdf.pages):
-                    if p % 2 == 0:
-                        # page left
-                        transformation = Transformation().translate(0, 0)
-                        a3page.merge_transformed_page(page, transformation, expand=False) 
-                    else:
-                        # page right
-                        transformation = Transformation().translate(A3SIZE['width'] / 2, 0)
-                        a3page.merge_transformed_page(page, transformation, expand=False) 
-                        # add page 
-                        writer.add_page(a3page)
-                        a3page = PageObject.create_blank_page(**A3SIZE)  
 
-            if bar:
-                bar.update(1)
-        with open(filename, 'wb') as f:
-            writer.write(f)
-        
+        opened_files = [] # Track opened files
+
+        current_file = 0
+        try:
+            for exam in pdf_files:
+                f = open(exam, 'rb')
+                opened_files.append(f) # Save the file reference
+                pdf = PdfReader(f, strict=False)
+                a3page = PageObject.create_blank_page(**A3SIZE)
+                rotate = False
+                if folded:
+                    # Create a booklet
+                    sheets = math.ceil(len(pdf.pages) / 4)
+                    booklet = next(make_book(range(1, len(pdf.pages) + 1), sheets * 4))
+                    left = True
+                    for p in booklet:
+                        if p is not None:
+                            page = pdf.pages[p - 1]
+                        else:
+                            page = PageObject.create_blank_page(**A4SIZE)
+                        if left:
+                            # page left
+                            if rotated and rotate:
+                                transformation = Transformation().rotate(180).translate(A3SIZE['width'] / 2,  A3SIZE['height'])
+                            else:
+                                transformation = Transformation().translate(0, 0)
+                            left = False
+                        else:
+                            # page right
+                            if rotated and rotate:
+                                transformation = Transformation().rotate(180).translate(A3SIZE['width'], A3SIZE['height'])
+                            else:
+                                transformation = Transformation().translate(A3SIZE['width'] / 2, 0)
+                            left = True
+                        a3page.merge_transformed_page(page, transformation, expand=False)
+                        if left:
+                            # add page
+                            writer.add_page(a3page)
+                            a3page = PageObject.create_blank_page(**A3SIZE)
+                            rotate = not rotate
+                else:
+                    # normal A3, two A4 for A3
+                    for p, page in enumerate(pdf.pages):
+                        if p % 2 == 0:
+                            # page left
+                            transformation = Transformation().translate(0, 0)
+                            a3page.merge_transformed_page(page, transformation, expand=False)
+                        else:
+                            # page right
+                            transformation = Transformation().translate(A3SIZE['width'] / 2, 0)
+                            a3page.merge_transformed_page(page, transformation, expand=False)
+                            # add page
+                            writer.add_page(a3page)
+                            a3page = PageObject.create_blank_page(**A3SIZE)
+
+                if bar:
+                    bar.update(1)
+                current_file += 1
+                if progress_callback:
+                    progress_callback(current_file, len(pdf_files), 'Collating exams (A3)')
+
+            with open(filename, 'wb') as f:
+                writer.write(f)
+
+        finally:
+            # FILE CLOSURE: Release all source files
+            for f in opened_files:
+                f.close()
+
     def draw_questions(self, Q):
         questions = []
         for filename, topic in Q:
@@ -337,7 +402,7 @@ class Generate:
                 topic_mutually_exclusive = [t]
                 q = re.search(QUESTION_RE, t[0])
                 if not q:
-                    raise RuntimeError(f"Apparently, question \"{t[0]}\" in filename {filename} has no text")                
+                    raise RuntimeError(f"Apparently, question \"{t[0]}\" in filename {filename} has no text")
                 q_id = q.group(2).strip() if q.group(2) else None
                 q = q.group(1).strip().lower()
                 j = 0
@@ -347,7 +412,7 @@ class Generate:
                         raise RuntimeError(f"Apparently, question \"{topic['content'][j]}\" in filename {filename} has no text")
                     cq_id = cq.group(2).strip() if cq.group(2) else None
                     if q == cq.group(1).strip().lower() or (q_id is not None and  q_id == cq_id):
-                        topic_mutually_exclusive.append(candidate_questions.pop(j))                        
+                        topic_mutually_exclusive.append(candidate_questions.pop(j))
                     else:
                         j = j + 1
                 current_questions += random.sample(topic_mutually_exclusive, 1)
@@ -356,17 +421,17 @@ class Generate:
         return questions
 
 
-    def create_exam(self, student):     
+    def create_exam(self, student, is_dyslexic=False):
         def code_answer(answers):
                 current = ""
                 for i in range(len(answers)):
                     if answers[i]:
                         current += chr(ord('A') + i)
                 return current
-        logger.info(f'Creating exam {student[0]} {student[1]}') 
+        logger.info(f'Creating exam {student[0]} {student[1]}')
         # randomly select a given number of questions from each file
         # however, avoid to select more than once the questions with the same text
-        questions = self.draw_questions(self.questions.items())        
+        questions = self.draw_questions(self.questions.items())
         if self.config['exam'].get('shuffle_questions', False):
             random.shuffle(questions)
         if self.config['exam'].get('max_questions', False):
@@ -376,7 +441,7 @@ class Generate:
         if self.config['exam'].get('shuffle_questions', False):
             random.shuffle(open_questions)
         if self.config['exam'].get('max_open_questions', False):
-            open_questions = open_questions[:self.config['exam'].get('max_open_questions')]                
+            open_questions = open_questions[:self.config['exam'].get('max_open_questions')]
 
         if self.config.get('header'):
             with DocumentStripRenderer(basedir=self.config.get('basedir')) as renderer:
@@ -393,33 +458,36 @@ class Generate:
                 footer = renderer.render(Document(self.config.get('footer')))
         else:
             footer = ''
-        with QuestionRenderer(language=self.config['exam'].get('language'), 
-                              date=self.exam_date, exam=self.config['exam'].get('name'), 
+        with QuestionRenderer(language=self.config['exam'].get('language'),
+                              date=self.exam_date, exam=self.config['exam'].get('name'),
                               student_no=student[0],
-                              student_name=student[1] if student[1] != 'Additional student' else '_' * 20, 
-                              header=header, 
+                              student_name=student[1] if student[1] != 'Additional student' else '_' * 20,
+                              header=header,
                               preamble=preamble,
                               footer=footer,
                               packages=self.config.get('packages', {}),
                               commands=self.config.get('commands', {}),
                               shuffle=self.config['exam'].get('shuffle_answers', True),
-                              dyslexia=self.config.get('dyslexia', False),
+                              dyslexia=is_dyslexic,
                               circled=self.config.get('choices', {}).get('circled', False),
                               usesf=self.config.get('choices', {}).get('usesf', False),
                               basedir=os.path.realpath(self.questions_path)) as renderer:
             content = '---\n' + '\n---\n'.join(map(lambda q: q[2], questions)) + '\n---\n'
             if open_questions:
-                content += '\n---\n'.join(map(lambda q: q[2], open_questions)) + '\n---\n'
-            document = renderer.render(Document(content))   
+                open_qs = list(map(lambda q: q[2], open_questions))
+                if open_qs and self.config.get('exam', {}).get('separate_open_questions', False):
+                    open_qs[0] = '[NEWPAGE]\n' + open_qs[0]
+                content += '\n---\n'.join(open_qs) + '\n---\n'
+            document = renderer.render(Document(content))
             tmp = list(map(lambda i: (*questions[i][:2], code_answer(renderer.questions[i]['answers']), renderer.questions[i]['permutation']), range(len(questions))))
 #            tmp += list(map(lambda i: (*open_questions[i][:2], code_answer(renderer.questions[i + len(questions)]['answers']), renderer.questions[i + len(questions)]['permutation']), range(len(open_questions))))
             overall_answers = list(code_answer(q['answers']) for q in renderer.questions)
             return document, tmp, overall_answers
-    
-    def append_exam(self, student, questions, answers):  
-        data = { 
+
+    def append_exam(self, student, questions, answers):
+        data = {
             "student_id": str(student[0]),
-            "fullname": student[1],                        
+            "fullname": student[1],
             "questions": []
         }
         for q in questions:
@@ -456,12 +524,12 @@ class Generate:
         questions = ""
         for r in sorted(rules.keys()):
             click.secho(f'Testing {os.path.basename(r)}', fg='cyan')
-            with open(r, 'r') as f:
+            with open(r, 'r', encoding='utf-8') as f:
                 current_questions = f.read()
-            with QuestionRenderer(language=self.config['exam'].get('language'), 
-                              date=dt.now(), 
-                              exam=self.config['exam'].get('name'), 
-                              header=header, 
+            with QuestionRenderer(language=self.config['exam'].get('language'),
+                              date=dt.now(),
+                              exam=self.config['exam'].get('name'),
+                              header=header,
                               preamble=preamble,
                               footer=footer,
                               packages=self.config.get('packages', {}),
@@ -479,12 +547,22 @@ class Generate:
             # Copy the file to the temporary directory
             click.secho(f'Copying omrexam.cls to tmp', fg='yellow')
             copy2(template_path, 'tmp')
-        with QuestionRenderer(language=self.config['exam'].get('language'), 
-                              date=dt.now(), 
-                              exam=self.config['exam'].get('name'), 
+            qr_eclevel = self.config.get('exam', {}).get('qr_eclevel', 'H')
+            qr_size = '2.8cm' if qr_eclevel == 'H' else '2.5cm'
+            cls_path = os.path.join('tmp', 'omrexam.cls')
+            with open(cls_path, 'r', encoding='utf-8') as f:
+                cls_content = f.read()
+            cls_content = re.sub(r'\\setlength\{\\OMR@BarcodeWidth\}\{.*?\}', lambda m: f'\\setlength{{\\OMR@BarcodeWidth}}{{{qr_size}}}', cls_content)
+            cls_content = re.sub(r'\\setlength\{\\OMR@BarcodeHeight\}\{.*?\}', lambda m: f'\\setlength{{\\OMR@BarcodeHeight}}{{{qr_size}}}', cls_content)
+            cls_content = re.sub(r'eclevel=[LMQH]', f'eclevel={qr_eclevel}', cls_content)
+            with open(cls_path, 'w', encoding='utf-8') as f:
+                f.write(cls_content)
+        with QuestionRenderer(language=self.config['exam'].get('language'),
+                              date=dt.now(),
+                              exam=self.config['exam'].get('name'),
                               student_no=0,
-                              student_name="", 
-                              header=header, 
+                              student_name="",
+                              header=header,
                               preamble=preamble,
                               footer=footer,
                               packages=self.config.get('packages', {}),
@@ -492,13 +570,14 @@ class Generate:
                               test=True,
                               circled=self.config.get('choices', {}).get('circled', False),
                               basedir=os.path.realpath(self.questions_path)) as renderer:
-            document = renderer.render(Document(questions)) 
+            document = renderer.render(Document(questions))
         click.secho('Generating PDF with all corrected questions', fg='red', underline=True)
         filename = ".".join(os.path.basename(f"{self.output_prefix}.pdf").split(".")[:-1])
-        document.generate_pdf(filepath=os.path.join("tmp", filename), 
-                              compiler='latexmk', 
+        document.generate_pdf(filepath=os.path.join("tmp", filename),
+                              compiler='latexmk',
                               compiler_args=['-xelatex'])
-        copy2(os.path.join('tmp',  f"{filename}.pdf"), '.')
+        output_dir = os.path.dirname(self.output_prefix) if os.path.dirname(self.output_prefix) else '.'
+        copy2(os.path.join('tmp',  f"{filename}.pdf"), output_dir)
 
 
 def _collate_star(args, paper, rotated=False, folded=True):
@@ -509,5 +588,5 @@ def _collate_star(args, paper, rotated=False, folded=True):
     if paper == "A4":
         return Generate.collate_exams_a4(out_path, files)
     else:
-        return Generate.collate_exams_a3(out_path, files, folded=folded, rotated=rotated)                    
+        return Generate.collate_exams_a3(out_path, files, folded=folded, rotated=rotated)
 

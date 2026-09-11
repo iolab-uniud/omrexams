@@ -13,7 +13,7 @@ import click
 from datetime import datetime as dt
 import dateparser as dp
 import yaml
-from omrexams import Generate, Sort, Correct, Mark, MoodleConverter, UpdateCorrected, MarkdownConverter, __version__ #, main_ui
+from omrexams import Generate, Sort, Correct, Mark, MoodleConverter, UpdateCorrected, MarkdownConverter, __version__
 import pandas as pd
 import re
 import logging
@@ -87,7 +87,7 @@ def cli(ctx, debug):
     if not debug:
         logger.setLevel(logging.ERROR)
     else:
-        logger.setLevel(logging.WARN)
+        logger.setLevel(logging.DEBUG)
 
 @cli.command()
 @click.option('--config', type=click.Path(exists=True, resolve_path=True), required=True, default=os.path.join('.', 'config.yaml'))
@@ -270,14 +270,17 @@ def test(ctx, config, questions_dir, output, yes):
 @click.option('--resolution', '-r', default=300)
 @click.option('--paper', '-p', type=click.Choice(['A4', 'A3'], case_sensitive=False), default='A4', required=False)
 @click.option('--yes', '-y', is_flag=True, type=bool, required=False, default=False, help='Answer yes to all prompt requests')
+@click.option('--add', is_flag=True, type=bool, required=False, default=False, help='Add the newly exams to the existing sorted directory')
 @click.pass_context
-def sort(ctx, scanned, sorted_dir, datafile, resolution, paper, yes):
+def sort(ctx, scanned, sorted_dir, datafile, resolution, paper, yes, add):
     """
     Sorts a set of pdf scanned documents into a series of png images, one for each sheet.
     """
-    if os.path.exists(sorted_dir):
+    if os.path.exists(sorted_dir) and not add:
         if yes or click.confirm(f"Sorted directory {sorted_dir} exists, overwrite its content?", default=True):
-            pass
+            click.secho(f'Cleaning directory {sorted_dir}', fg='yellow')
+            for f in glob.glob(os.path.join(sorted_dir, '*')):
+                os.remove(f)
         else:
             click.secho("Nothing done", fg='bright_yellow')
             sys.exit(0)

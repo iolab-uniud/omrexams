@@ -26,13 +26,13 @@ class MoodleConverter:
                 document.write(output_file + '-open.xml', xml_declaration=True, encoding='utf-8')
 
     def load_questions(self, filename):
-        with open(filename, 'r') as f:
+        with open(filename, 'r', encoding='utf-8') as f:
             content = f.read()
 
         # this is to prevent having same-topic same content questions in the output file
-        candidate_questions = list(filter(lambda q: not TITLE_RE.match(q) and not OPEN_QUESTION_RE.match(q), QUESTION_MARKER_RE.split(content)))        
+        candidate_questions = list(filter(lambda q: not TITLE_RE.match(q) and not OPEN_QUESTION_RE.match(q), QUESTION_MARKER_RE.split(content)))
         questions = {}
-        for q in candidate_questions:            
+        for q in candidate_questions:
             m = QUESTION_RE.search(q)
             if m.group(2):
                 if m.group(2) not in questions:
@@ -41,12 +41,12 @@ class MoodleConverter:
                 # normalize the text dropping multiple spaces
                 key = re.compile(r"\s+").sub(" ", m.group(1)).strip()
                 if key not in questions:
-                    questions[key] = q                
+                    questions[key] = q
 
         return questions.values()
-    
+
     def load_open_questions(self, filename):
-        with open(filename, 'r') as f:
+        with open(filename, 'r', encoding='utf-8') as f:
             questions = list(filter(lambda q: OPEN_QUESTION_RE.match(q), QUESTION_MARKER_RE.split(f.read())))
             return questions
         return []

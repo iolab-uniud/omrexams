@@ -23,27 +23,23 @@ class Sort:
     This class is responsible of dispatching the scanned exams from a PDF into
     a set of files, one for each single student, to be further processed later.
     """
-    def __init__(self, scanned, sorted, doublecheck):
+    def __init__(self, scanned, sorted, doublecheck, progress_callback=None):
         self.scanned = scanned
         self.sorted = sorted
-        self.offset = 10 # cropping offset, TODO: become a parameter
         self.doublecheck = doublecheck
+        self.progress_callback = progress_callback
 
-    def sort(self, resolution, paper="A4"):
+    def sort(self, resolution=None, paper="A4"):
         if not os.path.exists(self.sorted):
             click.secho(f'Creating directory {self.sorted}')
             os.mkdir(self.sorted)
-        else: # clean previous content
-            click.secho(f'Cleaning directory {self.sorted}')
-            for f in glob.glob(os.path.join(self.sorted, '*')):
-                os.remove(f)
         self.resolution = resolution
-        self.offset = int(1.0 / (2.54 / resolution))
         self.tasks_queue = mp.JoinableQueue()
         self.results_mutex = mp.RLock()
         self.task_done = mp.Condition(self.results_mutex)
-        self.results = mp.Value('i', 0, lock=self.results_mutex)   
+        self.results = mp.Value('i', 0, lock=self.results_mutex)
         self.page_leftovers = mp.Queue()
+        self.discarded_pages = mp.Queue()
 
         pages = 0
 
@@ -82,39 +78,50 @@ class Sort:
                 with self.results_mutex:
                     self.task_done.wait_for(lambda: prev <= self.results.value)
                     bar.update(self.results.value - prev)
+                    if self.progress_callback:
+                        self.progress_callback(self.results.value, pages, 'Dispatching scanned exams')
                     prev = self.results.value
         with self.results_mutex:
             if not self.page_leftovers.empty():
                 click.secho('There are page leftovers, merging them', fg='red', err=True)
                 dst_pdf = PdfWriter()
-                while not self.page_leftovers.empty():                    
+                while not self.page_leftovers.empty():
                     p = PdfReader(io.BytesIO(self.page_leftovers.get()))
                     dst_pdf.append(p)
                 with open('leftovers.pdf', 'wb') as f:
                     dst_pdf.write(f)
-        if paper == "A3":           
+        if paper == "A3":
             rmtree("split_tmp")
         click.secho('Finished', fg='red', underline=True)
 
-    def worker_main(self):                        
+        discarded = []
+        while not self.discarded_pages.empty():
+            discarded.append(self.discarded_pages.get())
+        return discarded
+
+    def worker_main(self):
         while True:
             filename, page = self.tasks_queue.get()
             if filename is None:
                 break
             try:
                 metadata = self.process(filename, page)
-                if metadata and self.doublecheck is not None:                    
+                if metadata is None:
+                    self.discarded_pages.put({'filename': filename, 'page': page})
+                elif self.doublecheck:
                     with TinyDB(self.doublecheck) as db:
                         Exam = Query()
                         table = db.table('exams')
                         result = table.get(Exam.student_id == str(metadata['student_id']))
-                        if not result: 
+                        if not result:
                             raise RuntimeError(f"Error double checking: student {metadata['student_id']} is not present in the data file")
                         answers = metadata['correct']
-                        if result['answers'] != answers:                    
+                        if result['answers'] != answers:
                             raise RuntimeError(f"Expected correct answers for student {metadata['student_id']} do not match\ncoded: {answers}/{metadata['correct']}\nexpected: {result[0]['answers']}")
             except Exception as e:
                 print("\n", str(e))
+                if "Error processing file" in str(e):
+                    self.discarded_pages.put({'filename': filename, 'page': page})
             finally:
                 with self.results_mutex:
                     self.results.value += 1
@@ -125,19 +132,54 @@ class Sort:
         dst_pdf = PdfWriter()
         with open(filename, 'rb') as f:
             current_page = PdfReader(f).pages[page]
+            resolution = self.resolution
+            if resolution is None:
+                media_box = current_page.mediabox
+                width_pt = float(media_box.width)
+                height_pt = float(media_box.height)
+
+                try:
+                    if '/Resources' in current_page and '/XObject' in current_page['/Resources']:
+                        xobjects = current_page['/Resources']['/XObject'].get_object()
+                        for obj in xobjects:
+                            if xobjects[obj]['/Subtype'] == '/Image':
+                                width = float(xobjects[obj]['/Width'])
+                                height = float(xobjects[obj]['/Height'])
+                                dpi_x = width / (width_pt / 72.0)
+                                dpi_y = height / (height_pt / 72.0)
+                                resolution = round((dpi_x + dpi_y) / 2.0)
+                                break
+                except Exception:
+                    pass
+
+                if resolution is None:
+                    try:
+                        for embedded_image in current_page.images:
+                            if hasattr(embedded_image, 'image') and embedded_image.image:
+                                width, height = embedded_image.image.size
+                                dpi_x = width / (width_pt / 72.0)
+                                dpi_y = height / (height_pt / 72.0)
+                                resolution = round((dpi_x + dpi_y) / 2.0)
+                                break
+                    except Exception:
+                        pass
+
+                if resolution is None:
+                    resolution = 300
+
             dst_pdf.add_page(current_page)
             pdf_bytes = io.BytesIO()
             dst_pdf.write(pdf_bytes)
             pdf_bytes.seek(0)
-        with Image(file=pdf_bytes, resolution=self.resolution) as img:
+        with Image(file=pdf_bytes, resolution=resolution) as img:
             img.background_color = Color('white')
             img.alpha_channel = 'remove'
             img_buffer = np.asarray(bytearray(img.make_blob('bmp')), dtype=np.uint8)
-            image = cv2.imdecode(img_buffer, cv2.IMREAD_GRAYSCALE)   
+            image = cv2.imdecode(img_buffer, cv2.IMREAD_GRAYSCALE)
             try:
-                metadata = qrdecoder.decode(image)                    
+                metadata = qrdecoder.decode(image)
                 if metadata is None:
-                    return None                    
+                    return None
                 if metadata.get('rotated', False):
                     image = cv2.rotate(image, cv2.ROTATE_180)
                 # perform a rotation and image cropping to the qrcodes
@@ -147,23 +189,23 @@ class Sort:
                 rotation = np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float64)
                 # FIXME: currently the rotation is not working properly, possibly because the stored precision is not enough
                 if False and metadata.get('qrheight') is not None and metadata.get('qrwidth') is not None:
-                    detected_diag_angle = math.atan(height / width) * 360 / (2 * math.pi) 
+                    detected_diag_angle = math.atan(height / width) * 360 / (2 * math.pi)
                     expected_diag_angle = math.atan(metadata['qrheight'] / metadata['qrwidth']) * 360 / (2 * math.pi)
                     if not np.isclose(detected_diag_angle, expected_diag_angle):
                         logger.debug(f"Correcting rotation by {detected_diag_angle - expected_diag_angle} degrees")
                         rotation = cv2.getRotationMatrix2D(tuple(map(int, tl)),
-                            detected_diag_angle - expected_diag_angle, 1.0)          
+                            detected_diag_angle - expected_diag_angle, 1.0)
                 rows, cols = image.shape[:2]
                 image = cv2.warpAffine(image, rotation, (cols, rows), borderValue=WHITE)
                 # the image could be flipped, therefore here we restore the right qrcode order
                 cv2.imwrite(os.path.join(self.sorted, f'{metadata["student_id"]}-{metadata["page"]}.png'), image)
                 return metadata
-            except Exception as e:        
+            except Exception as e:
                 with self.results_mutex:
-                    pdf_bytes.seek(0)                    
-                    self.page_leftovers.put(pdf_bytes.getvalue())        
-                raise RuntimeError(f"Error processing file {filename}, page {page + 1} \n{str(e)}")        
-            
+                    pdf_bytes.seek(0)
+                    self.page_leftovers.put(pdf_bytes.getvalue())
+                raise RuntimeError(f"Error processing file {filename}, page {page + 1} \n{str(e)}")
+
     @staticmethod
     def split_pages(reader):
         writer = PdfWriter()

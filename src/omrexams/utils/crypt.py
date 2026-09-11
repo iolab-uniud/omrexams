@@ -16,7 +16,7 @@ def caesar_shift(text, places):
 
 def caesar_unshift(encrypted, places):
     def substitute(char):
-        if char in ascii_lowercase or char in "_" or char in "`":            
+        if char in ascii_lowercase or char in "_" or char in "`":
             char_num = ord(char) - 95
             char = chr((char_num - places) % 28 + 95)
             if char == "_":
@@ -33,7 +33,7 @@ def vigenere_encrypt(text, key):
         if k.isalpha():
             tmp.append(ord(k.lower()) - ord('a'))
         elif k.isdigit():
-            tmp.append(int(k) + 1)        
+            tmp.append(int(k) + 1)
     return "".join(caesar_shift(c, k) for c, k in zip(text, cycle(tmp)))
 
 def vigenere_decrypt(text, key):
@@ -51,10 +51,10 @@ def binary_encrypt(solutions, key):
     assert type(solutions) is list, "Only lists can be binary encrypted"
     if type(key) is not str:
         key = str(key)
-    # transform the key in sequence of bytes (taking only the least significant byte)
+    # transform the key into sequence of bytes (taking only the least significant byte)
     mask = (1 << 8) - 1
     key_generator = cycle(ord(c) & mask for c in key)
-    questions = 0b0  
+    questions = 0b0
     for i, text in enumerate(solutions):
         q = 0b0
         for c in text:
@@ -69,16 +69,16 @@ def binary_encrypt(solutions, key):
 def binary_decrypt(solutions, key):
     assert type(solutions) is str or type(solutions) is bytes, "Only strings or byte strings can be decrypted"
     solutions = int.from_bytes(a2b_base64(solutions), 'little')
-    # 8 bit 11...1 mask
+    # 8 bits 11...1 mask
     mask = (1 << 8) - 1
     if type(key) is not str:
         key = str(key)
-    # transform the key in sequence of bytes (taking only the least significant byte)
+    # transform the key into sequence of bytes (taking only the least significant byte)
     key_generator = cycle(ord(c) & mask for c in key)
     # extract solutions, the order is reversed
     tmp = []
     while solutions:
-        current = solutions & mask 
+        current = solutions & mask
         tmp.insert(0, current)
         solutions = solutions >> 8
     questions = []
@@ -92,7 +92,7 @@ def binary_decrypt(solutions, key):
                 q += chr(digit + ord('a'))
             extract = extract << 1
             digit = digit + 1
-        questions.append(q)       
+        questions.append(q)
     return questions
 
 

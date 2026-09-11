@@ -10,7 +10,6 @@ import click
 
 logger = logging.getLogger("omrexams")
 
-
 TOP_LEFT_REGEX = r'^(?P<id>[\d-]+),(?P<sequence>.+)$'
 BOTTOM_RIGHT_REGEX = r'^\((?P<x0>\d+),\s*(?P<y0>\d+)\)-\((?P<x1>\d+),\s*(?P<y1>\d+)\)/\((?P<qrwidth>\d+),\s*(?P<qrheight>\d+)\)/(?P<bsize>\d+(?:\.\d+)?),\s*(?P<page>\d+)(?:,(?P<start>\d+)-(?P<end>\d+))?$'
 
@@ -18,7 +17,7 @@ available_libraries = ['openCV']
 try:
     import zxingcpp
     available_libraries.append('zxingcpp')
-except: 
+except:
     pass
 try:
     from pyzbar import pyzbar
@@ -38,18 +37,18 @@ def decode_bottom_right(data):
         m = re.search(BOTTOM_RIGHT_REGEX, data)
         if not m:
             return None
-            
+
         p0, p1 = np.array([m.group('x0'), m.group('y0')], dtype=int), np.array([m.group('x1'), m.group('y1')], dtype=int)
         qrwidth = int(m.group('qrwidth'))
         qrheight = int(m.group('qrheight'))
         bsize = float(m.group('bsize'))
-        
-        return { 'p0': p0, 
-                 'p1': p1, 
-                 'qrwidth': qrwidth, 
+
+        return { 'p0': p0,
+                 'p1': p1,
+                 'qrwidth': qrwidth,
                  'qrheight': qrheight,
                  'bsize': bsize,
-                 'page': int(m.group('page')), 
+                 'page': int(m.group('page')),
                  'range': (int(m.group('start')), int(m.group('end')))
                }
 
@@ -66,7 +65,7 @@ def decode_top_left(data):
     else:
         correct = list(c.upper() for c in binary_decrypt(m.group('sequence'), m.group('id')))
 
-    return { 
+    return {
         # CHECK: removed int across student_id
         'student_id': m.group('id'),
         'correct': correct
@@ -99,7 +98,7 @@ def prepare_image_for_decoding(image):
     bw2 = cv2.adaptiveThreshold(g, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 35, 7)
     bw = cv2.bitwise_and(bw1, bw2)
 
-    # 5. Morph close for removing small holes 
+    # 5. Morph close for removing small holes
     # TODO: check if needed
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
     bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, kernel, iterations=1)
@@ -107,14 +106,14 @@ def prepare_image_for_decoding(image):
     return bw
 
 
-def decode(image, highlight=False, offset=5):   
+def decode(image, highlight=False, offset=5):
     def search_qrcodes_opencv(image):
-        ret_code, decoded_text, qrcodes, _ = cv2.QRCodeDetector().detectAndDecodeMulti(image)     
+        ret_code, decoded_text, qrcodes, _ = cv2.QRCodeDetector().detectAndDecodeMulti(image)
         # Try to detect (and skip) blank images
         if not ret_code or qrcodes.shape[0] < 2:
             _retval, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             if cv2.countNonZero(binary) >= (image.shape[0] * image.shape[1]) * 0.99: # Blank image
-                return None, None        
+                return None, None
         # adaptively change threshold to detect the qrcode
         t = 255
         while not np.isclose(t, 0.0) and (not ret_code or qrcodes.shape[0] < 2 or not all(d for d in decoded_text)):
@@ -131,8 +130,8 @@ def decode(image, highlight=False, offset=5):
             click.secho("Found 4 qrcodes in page, probably it is an A3 printed exam, therefore you should use --paper a3 in sorting", color="red")
             raise RuntimeError("Found 4 qrcodes, probably you should use --paper a3 in sorting")
         if qrcodes.shape[0] > 2:
-            raise RuntimeError(f"Found more than two qrcodes {len(qrcodes)}")     
-            
+            raise RuntimeError(f"Found more than two qrcodes {len(qrcodes)}")
+
         # TODO: maybe np.lexsort could be used
         x = qrcodes[0, 0, 0], qrcodes[1, 0, 0]
         y = qrcodes[0, 0, 1], qrcodes[1, 0, 1]
@@ -144,39 +143,39 @@ def decode(image, highlight=False, offset=5):
 
     def opencv_decode(image, highlight=False, offset=5):
         if len(image.shape) > 2:
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) 
-        
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
         decoded_text, qrcodes = search_qrcodes_opencv(image)
 
         if decoded_text is None and qrcodes is None:
             # Empty page detected
             return None
-        
+
         # decide for rotation
         rotated = check_rotation(decoded_text)
         if rotated:
             image = cv2.rotate(image, cv2.ROTATE_180)
             decoded_text, qrcodes = search_qrcodes_opencv(image)
 
-        # extract information from the qrcode    
+        # extract information from the qrcode
         top_left_decode = decode_top_left(decoded_text[0])
-        bottom_right_decode = decode_bottom_right(decoded_text[1])                     
-        
+        bottom_right_decode = decode_bottom_right(decoded_text[1])
+
         t = order_points(np.array([q for qrcode in qrcodes for q in qrcode]))
         tl = t[0].astype('int')
         br = t[2].astype('int')
 
         if highlight:
             for qrcode in qrcodes:
-                # extract the bounding box location of the qrcode and draw a green 
+                # extract the bounding box location of the qrcode and draw a green
                 # frame around them
                 t = order_points(qrcode.astype('int'))
-                # currently assumes that the image has the right orientation 
+                # currently assumes that the image has the right orientation
                 # if this is not the case, the qrcode.polygon can be inspected
                 # and possibly used for rotation
                 cv2.rectangle(image, t[0] - offset, t[2] + offset, GREEN, 3)
 
-        metadata = { 
+        metadata = {
             **top_left_decode,
             **bottom_right_decode,
             'top_left': tl,
@@ -192,7 +191,7 @@ def decode(image, highlight=False, offset=5):
             metadata['page_correction'] = metadata['correct'][metadata['range'][0] - 1:metadata['range'][1]]
 
         return metadata
-    
+
     def search_qrcodes_pyzbar(image):
         qrcodes = pyzbar.decode(image, symbols=[pyzbar.ZBarSymbol.QRCODE])
         # Try to detect (and skip) blank images
@@ -218,9 +217,9 @@ def decode(image, highlight=False, offset=5):
 
         return qrcodes
 
-    def pyzbar_decode(image, highlight=False, offset=5):                        
+    def pyzbar_decode(image, highlight=False, offset=5):
         if len(image.shape) > 2:
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)                 
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
         qrcodes = search_qrcodes_pyzbar(image)
         if len(qrcodes) < 2:
@@ -230,7 +229,7 @@ def decode(image, highlight=False, offset=5):
             raise RuntimeError("Found 4 qrcodes, probably you should use --paper a3 in sorting")
         if len(qrcodes) > 2:
             raise RuntimeError(f"Found more than two qrcodes {qrcodes}")
-      
+
         rotated = check_rotation(list(map(lambda x: x.data.decode('ascii'), qrcodes)))
         if rotated:
             image = cv2.rotate(image, cv2.ROTATE_180)
@@ -238,19 +237,19 @@ def decode(image, highlight=False, offset=5):
 
         # extract information from the qrcode
         top_left_decode = decode_top_left(qrcodes[0].data.decode('ascii'))
-        bottom_right_decode = decode_bottom_right(qrcodes[1].data.decode('ascii'))           
+        bottom_right_decode = decode_bottom_right(qrcodes[1].data.decode('ascii'))
 
         tl = np.array(qrcodes[0].rect[:2])
         br = np.array(qrcodes[1].rect[:2]) + np.array(qrcodes[1].rect[2:])
 
         if highlight:
             for qrcode in qrcodes:
-                # extract the bounding box location of the qrcode and draw a green 
+                # extract the bounding box location of the qrcode and draw a green
                 # frame around them
                 (x, y, w, h) = qrcode.rect
                 cv2.rectangle(image, (int(x - offset), int(y - offset)), (int(x + w + offset), int(y + h + offset)), GREEN, 3)
 
-        metadata = { 
+        metadata = {
             **top_left_decode,
             **bottom_right_decode,
             'top_left': tl,
@@ -265,14 +264,14 @@ def decode(image, highlight=False, offset=5):
         if metadata['range'][0] is not None and metadata['range'][1] is not None:
             metadata['page_correction'] = metadata['correct'][metadata['range'][0] - 1:metadata['range'][1]]
 
-        return metadata            
-    
+        return metadata
+
     def search_qrcodes_zxing(image, highlight=False, offset=5):
         return zxingcpp.read_barcodes(image)
 
     def zxing_decode(image, highlight=False, offset=5):
         if len(image.shape) > 2:
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)                 
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
         qrcodes = search_qrcodes_zxing(image)
         if len(qrcodes) < 2:
@@ -282,7 +281,7 @@ def decode(image, highlight=False, offset=5):
             raise RuntimeError("Found 4 qrcodes, probably you should use --paper a3 in sorting")
         if len(qrcodes) > 2:
             raise RuntimeError(f"Found more than two qrcodes {qrcodes}")
-      
+
         rotated = check_rotation(list(map(lambda x: x.text, qrcodes)))
         if rotated:
             image = cv2.rotate(image, cv2.ROTATE_180)
@@ -290,19 +289,19 @@ def decode(image, highlight=False, offset=5):
 
         # extract information from the qrcode
         top_left_decode = decode_top_left(qrcodes[0].text)
-        bottom_right_decode = decode_bottom_right(qrcodes[1].text)    
+        bottom_right_decode = decode_bottom_right(qrcodes[1].text)
 
         tl = np.array([qrcodes[0].position.top_left.x, qrcodes[0].position.top_left.y])
         br = np.array([qrcodes[1].position.bottom_right.x, qrcodes[1].position.bottom_right.y])
 
         if highlight:
             for qrcode in qrcodes:
-                # extract the bounding box location of the qrcode and draw a green 
+                # extract the bounding box location of the qrcode and draw a green
                 # frame around them
                 (x, y, w, h) = qrcode.rect
                 cv2.rectangle(image, (int(x - offset), int(y - offset)), (int(x + w + offset), int(y + h + offset)), GREEN, 3)
 
-        metadata = { 
+        metadata = {
             **top_left_decode,
             **bottom_right_decode,
             'top_left': tl,
@@ -317,15 +316,17 @@ def decode(image, highlight=False, offset=5):
         if metadata['range'][0] is not None and metadata['range'][1] is not None:
             metadata['page_correction'] = metadata['correct'][metadata['range'][0] - 1:metadata['range'][1]]
 
-        return metadata     
+        return metadata
 
     # Go in order of performance
     if 'zxingcpp' in available_libraries:
+        logger.debug("Trying zxingcpp for QR code decoding")
         try:
             return zxing_decode(image, highlight, offset)
         except:
             pass
     if 'pyzbar' in available_libraries:
+        logger.debug("Trying pyzbar for QR code decoding")
         try:
             return pyzbar_decode(image, highlight, offset)
         except:
@@ -333,18 +334,27 @@ def decode(image, highlight=False, offset=5):
     # FALLBACK to opencv
     assert 'openCV' in available_libraries, "OpenCV should be always available"
     try:
+        logger.debug("Trying OpenCV for QR code decoding")
         return opencv_decode(image, highlight, offset)
     except:
         pass
-    # FALLBACK
-    if len(image.shape) > 2:
-        gray_img = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    else:
-        gray_img = image
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    clahe_image = clahe.apply(gray_img)
-    return opencv_decode(clahe_image, highlight, offset)
+    # FALLBACK with preprocessing
+    prepared_img = prepare_image_for_decoding(image)
+    if 'zxingcpp' in available_libraries:
+        logger.debug("Trying zxingcpp with preprocessing for QR code decoding")
+        try:
+            return zxing_decode(prepared_img, highlight, offset)
+        except:
+            pass
+    if 'pyzbar' in available_libraries:
+        logger.debug("Trying pyzbar with preprocessing for QR code decoding")
+        try:
+            return pyzbar_decode(prepared_img, highlight, offset)
+        except:
+            pass
+    logger.debug("Trying OpenCV with preprocessing for QR code decoding")
+    return opencv_decode(prepared_img, highlight, offset)
 
 
-        
+
 

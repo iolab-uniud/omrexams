@@ -47,8 +47,8 @@
 % to compute the geometry
 \newlength{\OMR@BarcodeWidth}
 \newlength{\OMR@BarcodeHeight}
-\setlength{\OMR@BarcodeWidth}{2.5cm}
-\setlength{\OMR@BarcodeHeight}{2.5cm}
+\setlength{\OMR@BarcodeWidth}{2.8cm}
+\setlength{\OMR@BarcodeHeight}{2.8cm}
 
 \newlength{\OMR@topmargindim}
 \newlength{\OMR@bottommargindim}
@@ -208,7 +208,7 @@ rectangle/.default={0.2cm}}
 %        {\qrcode[height=\OMR@BarcodeHeight,level=H]{\thematriculationno,\thesolution}};          
         {
           \begin{pspicture}(\OMR@BarcodeWidth,\OMR@BarcodeHeight)
-            \psbarcode{\thematriculationno,\thesolution}{width=\OMR@lengthtoinches{\OMR@BarcodeWidth} height=\OMR@lengthtoinches{\OMR@BarcodeHeight}}{qrcode}
+            \psbarcode{\thematriculationno,\thesolution}{width=\OMR@lengthtoinches{\OMR@BarcodeWidth} height=\OMR@lengthtoinches{\OMR@BarcodeHeight} eclevel=H}{qrcode}
           \end{pspicture}
         };
     \draw
@@ -237,7 +237,7 @@ rectangle/.default={0.2cm}}
           %{\qrcode[height=\OMR@BarcodeHeight,level=H]{\OMR@Sizes,\thepage,0-0}};
           {
             \begin{pspicture}(\OMR@BarcodeWidth,\OMR@BarcodeHeight)
-              \psbarcode{\OMR@Sizes,\thepage,0-0}{width=\OMR@lengthtoinches{\OMR@BarcodeWidth} height=\OMR@lengthtoinches{\OMR@BarcodeHeight}}{qrcode}
+              \psbarcode{\OMR@Sizes,\thepage,0-0}{width=\OMR@lengthtoinches{\OMR@BarcodeWidth} height=\OMR@lengthtoinches{\OMR@BarcodeHeight} eclevel=H}{qrcode}
             \end{pspicture}
           };
       }
@@ -266,7 +266,7 @@ rectangle/.default={0.2cm}}
           % };
           {
             \begin{pspicture}(\OMR@BarcodeWidth,\OMR@BarcodeHeight)
-              \psbarcode{\OMR@Sizes,\thepage,\OMR@questions@currentpage@start-\OMR@questions@currentpage@end}{width=\OMR@lengthtoinches{\OMR@BarcodeWidth} height=\OMR@lengthtoinches{\OMR@BarcodeHeight}}{qrcode}
+              \psbarcode{\OMR@Sizes,\thepage,\OMR@questions@currentpage@start-\OMR@questions@currentpage@end}{width=\OMR@lengthtoinches{\OMR@BarcodeWidth} height=\OMR@lengthtoinches{\OMR@BarcodeHeight} eclevel=H}{qrcode}
             \end{pspicture}
           };
       }
@@ -286,7 +286,20 @@ rectangle/.default={0.2cm}}
 \DeclareOption{circled}{
   \renewcommand{\choicelabel}{\blacksquared{\sffamily\footnotesize\thechoice}}
 }
-\DeclareOption{dyslexia}{\setallmainfonts{OpenDyslexic}\setmonofont{OpenDyslexicMono}\setsansfont{OpenDyslexic}}
+\DeclareOption{dyslexia}{%
+  \IfFontExistsTF{OpenDyslexic}{%
+    \setallmainfonts{OpenDyslexic}
+    \setsansfont{OpenDyslexic}
+  }{%
+    \setallmainfonts{Comic Sans MS}
+    \setsansfont{Comic Sans MS}
+  }%
+  \IfFontExistsTF{OpenDyslexicMono}{%
+    \setmonofont{OpenDyslexicMono}
+  }{%
+   \setmonofont{Consolas}
+  }%
+}
 \newboolean{testing}
 %\setboolean{testing}{false}
 \DeclareOption{testing}{\setboolean{testing}{true}}

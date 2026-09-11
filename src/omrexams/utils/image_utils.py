@@ -26,7 +26,7 @@ def order_points(pts):
 
 def line_intersect(pts1, pts2):
     m1 = pts1[1] - pts1[0]
-    m1 = m1[1] / m1[0] 
+    m1 = m1[1] / m1[0]
     m2 = pts2[1] - pts2[0]
     m2 = m2[1] / m2[0]
     h_line1 = np.array([-m1, 1, m1 * pts1[0][0] - pts1[0][1]])
@@ -34,14 +34,14 @@ def line_intersect(pts1, pts2):
     intersection = np.cross(h_line1, h_line2)
     return intersection[:2] / intersection[2]
 
-# TODO: temporarily abandoned idea, it would be useful for perspective transform
+# TODO: temporarily abandoned idea, it would be useful for perspective transformation
 def search_for_markers(image, top_left, bottom_right, resolution):
     delta = 1.0 / (2.54 / resolution) # search in a square with semi-width 1.0cm
     center = line_intersect(top_left[[0, 1]], bottom_right[[1, 2]])
 #    return top_left[[0, 1]], bottom_right[[1, 2]]
-    top_right_area = np.array([center - delta, center + delta], dtype=int) 
+    top_right_area = np.array([center - delta, center + delta], dtype=int)
     return top_right_area
-    roi = image   
+    roi = image
     # blurred = cv2.GaussianBlur(roi, (5, 5), 0)
     # _, thresh = cv2.threshold(blurred, 60, 255, cv2.THRESH_BINARY)
     # # find contours in the thresholded image
