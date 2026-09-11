@@ -203,7 +203,7 @@ class TypstQuestionRenderer(TypstRenderer):
             inner = inner.replace("\\[NEWPAGE\\]", "")
             prefix = "#pagebreak()\n"
         if not self.questions[-1]["question"]:
-            return inner
+            return f"{prefix}{inner}"
         number = len(self.questions)
         labels = tuple(chr(ord("A") + index) for index in range(len(self.questions[-1]["answers"])))
         title = self.questions[-1]["question"]

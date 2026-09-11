@@ -17,6 +17,18 @@ combinations are generated below `examples/generated/<engine>/<paper>/`:
 - `corrected.pdf`: visual correction report;
 - `exam.json`: generated questions and detected answers.
 
+The same workflow can be called directly as a Python API:
+
+```python
+from pathlib import Path
+
+from examples.generate_examples import generate_engine
+
+destination = generate_engine("typst", "A4", Path("examples/generated"))
+```
+
 The automated equivalent is `tests/test_exam_workflow.py`. It verifies LaTeX
-and Typst on A4 and folded A3, passes `paper=A3` to both generation and sorting,
-and checks all artificially marked answers after correction.
+and Typst on A4 and folded A3 through both subprocess and direct function calls,
+passes `paper=A3` to both generation and sorting, and checks all artificially
+marked answers after correction. Every exam contains four OMR pages followed by
+two open-question pages with no answer markers.

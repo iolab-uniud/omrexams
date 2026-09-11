@@ -154,7 +154,7 @@ def test_typst_multipage_qr_payloads_match_page_questions(tmp_path):
             "- [ ] Errata\n"
         )
     blocks.append(
-        "---\n[NEWPAGE]\n## Domanda aperta\n"
+        "---\n[NEWPAGE]\n### Domanda aperta\n"
         "Questa risposta può continuare sulla pagina seguente.\n"
     )
 

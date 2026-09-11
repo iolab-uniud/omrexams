@@ -436,6 +436,8 @@ class Generate:
                         j = j + 1
                 current_questions += random.sample(topic_mutually_exclusive, 1)
             sample = random.sample(list(range(len(current_questions))), min(topic['draw'], len(current_questions)))
+            if not self.config['exam'].get('shuffle_questions', False):
+                sample.sort(key=lambda index: current_questions[index][1])
             questions += list(map(lambda index: (filename, current_questions[index][1], current_questions[index][0]), sample))
         return questions
 

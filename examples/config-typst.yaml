@@ -5,6 +5,7 @@ exam:
   shuffle_questions: false
   shuffle_answers: false
   qr_eclevel: H
+  separate_open_questions: true
 
 header: "**OMRExams** - esempio Typst"
 footer: "Fixture visuale del workflow generate, sort e correct."
@@ -14,4 +15,4 @@ warning: |
 
 questions:
   - from: questions.md
-    draw: 6
+    draw: 8

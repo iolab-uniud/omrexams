@@ -78,7 +78,7 @@ omrexams = "omrexams.cli:main_cli"
 Homepage = "https://iolab.uniud.it"
 
 [tool.setuptools.packages.find]
-where = ["src"]  # or "" if omrexams is in the root
+where = ["."]
 include = ["omrexams*"]
 
 

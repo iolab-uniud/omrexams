@@ -16,7 +16,7 @@ from omrexams.utils import qrdecoder
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "generated"
-ANSWER_INDEXES = (0, 1, 1, 2, 2, 3)
+ANSWER_INDEXES = (0, 1, 1, 2, 2, 3, 3, 0)
 
 
 def mark_answers(image_path, answer_indexes):
@@ -79,13 +79,16 @@ def generate_engine(engine, paper="A4", output=OUTPUT):
         str(sorted_dir),
         str(prefix.with_suffix(".json")),
     ).sort(300, paper)
-    if len(discarded) != 1:
+    expected_discarded = 0 if paper == "A4" else 2
+    if len(discarded) != expected_discarded:
         raise RuntimeError(f"Discarded pages for {engine}: {discarded}")
 
     pages = sorted(sorted_dir.glob("*.png"))
     for page in pages:
         metadata = qrdecoder.decode(cv2.imread(str(page)))
         first, last = metadata["range"]
+        if (first, last) == (0, 0):
+            continue
         mark_answers(page, ANSWER_INDEXES[first - 1:last])
 
     previous_stdin = sys.stdin

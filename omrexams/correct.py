@@ -270,7 +270,7 @@ class Correct:
 
         if metadata['range'] == (0, 0): # no questions and markers on current page
             self.write(filename, image, is_wide=False)
-            return [], []
+            return [], [], []
         tl, br = metadata['top_left'], metadata['bottom_right']
         # prepare roi
         p0 = np.round(np.dot(metadata['p0'], metadata['scaling'])).astype(int) + tl

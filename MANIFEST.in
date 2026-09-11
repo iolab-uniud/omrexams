@@ -1,2 +1,2 @@
-recursive-include src/omrexams/texmf *
-recursive-include src/omrexams/typst *
+recursive-include omrexams/texmf *
+recursive-include omrexams/typst *
