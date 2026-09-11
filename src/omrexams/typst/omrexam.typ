@@ -3,6 +3,8 @@
 
 #let marker-size = 14pt
 #let barcode-size = 28mm
+#let crop-margin = 10mm
+#let vertical-margin = barcode-size + 15mm
 #let omr-gray = rgb("888888")
 
 #let registration-mark() = rect(width: marker-size / 2, height: marker-size / 2, fill: black)
@@ -47,6 +49,24 @@
   }
 }
 
+#let page-markers(student-data, show-roi) = {
+  place(
+    top + left,
+    dx: crop-margin,
+    dy: crop-margin,
+    qr-code(student-data, width: barcode-size, height: barcode-size, error-correction: "H"),
+  )
+  place(top + right, dx: -crop-margin, dy: crop-margin, registration-mark())
+  place(bottom + left, dx: crop-margin, dy: -crop-margin, registration-mark())
+  place(
+    bottom + right,
+    dx: -crop-margin,
+    dy: -crop-margin,
+    qr-code(page-qr-data(), width: barcode-size, height: barcode-size, error-correction: "H"),
+  )
+  roi-overlay(show-roi)
+}
+
 #let bubble(body: none, filled: false) = circle(
   width: marker-size,
   height: marker-size,
@@ -80,32 +100,12 @@
 ) = {
   set page(
     paper: "a4",
-    margin: (top: 43mm, bottom: 43mm, left: 10mm, right: 62.5mm),
+    margin: (top: vertical-margin, bottom: vertical-margin, left: 10mm, right: 62.5mm),
     header: context {
-      grid(
-        columns: (barcode-size, 1fr, marker-size / 2),
-        column-gutter: 2mm,
-        align: (left + top, left + top, right + top),
-        qr-code(student-id + "," + solution, width: barcode-size, height: barcode-size, error-correction: "H"),
-        header,
-        registration-mark(),
-      )
+      pad(left: barcode-size + 2mm, header)
     },
-    footer: context {
-      grid(
-        columns: (marker-size / 2, 1fr),
-        column-gutter: 2mm,
-        align: (left + bottom, left + bottom),
-        registration-mark(),
-        footer,
-      )
-      place(
-        right + bottom,
-        dx: 52.5mm,
-        qr-code(page-qr-data(), width: barcode-size, height: barcode-size, error-correction: "H"),
-      )
-    },
-    foreground: context { roi-overlay(show-roi) },
+    footer: footer,
+    foreground: context { page-markers(student-id + "," + solution, show-roi) },
   )
   set text(size: 10pt)
   set par(justify: true)
