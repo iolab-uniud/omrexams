@@ -11,6 +11,7 @@ from shutil import copy2, rmtree
 import multiprocessing as mp
 from functools import partial
 from . utils.markdown import QuestionRenderer, DocumentStripRenderer, Document
+from . utils.typst import TypstQuestionRenderer, TypstDocumentStripRenderer
 from pypdf import PdfReader, PdfWriter, Transformation
 from pypdf._page import PageObject
 import math
@@ -74,6 +75,11 @@ class Generate:
         self.progress_callback = progress_callback
         self.dyslexia_count = dyslexia_count
         self.test = test
+        self.engine = self.config.get('exam', {}).get('engine', 'latex').lower()
+        if self.engine not in ('latex', 'typst'):
+            raise ValueError('exam.engine must be either "latex" or "typst"')
+        if self.engine == 'typst' and (self.config.get('packages') or self.config.get('commands')):
+            raise ValueError('Typst does not support the LaTeX-specific packages and commands options')
         self.paper = paper.upper()
         if self.paper not in ('A4', 'A3'):
             raise AttributeError('paper value should be either "A3" or "A4"')
@@ -127,6 +133,32 @@ class Generate:
         else:
             self.generate_test()
 
+    def renderer_classes(self):
+        if self.engine == 'typst':
+            return TypstQuestionRenderer, TypstDocumentStripRenderer
+        return QuestionRenderer, DocumentStripRenderer
+
+    def prepare_template(self):
+        if self.engine == 'typst':
+            with pkg_resources.path("omrexams.typst", "omrexam.typ") as template_path:
+                click.secho('Copying omrexam.typ to tmp', fg='yellow')
+                copy2(template_path, 'tmp')
+            return
+
+        with pkg_resources.path("omrexams.texmf", "omrexam.cls") as template_path:
+            click.secho('Copying omrexam.cls to tmp', fg='yellow')
+            copy2(template_path, 'tmp')
+            qr_eclevel = self.config.get('exam', {}).get('qr_eclevel', 'H')
+            qr_size = '2.8cm' if qr_eclevel == 'H' else '2.5cm'
+            cls_path = os.path.join('tmp', 'omrexam.cls')
+            with open(cls_path, 'r', encoding='utf-8') as f:
+                cls_content = f.read()
+            cls_content = re.sub(r'\\setlength\{\\OMR@BarcodeWidth\}\{.*?\}', lambda m: f'\\setlength{{\\OMR@BarcodeWidth}}{{{qr_size}}}', cls_content)
+            cls_content = re.sub(r'\\setlength\{\\OMR@BarcodeHeight\}\{.*?\}', lambda m: f'\\setlength{{\\OMR@BarcodeHeight}}{{{qr_size}}}', cls_content)
+            cls_content = re.sub(r'eclevel=[LMQH]', f'eclevel={qr_eclevel}', cls_content)
+            with open(cls_path, 'w', encoding='utf-8') as f:
+                f.write(cls_content)
+
     def generate_exams(self):
         rules = self.load_rules()
         self.questions = {}
@@ -140,20 +172,7 @@ class Generate:
         if os.path.exists('tmp'):
             rmtree('tmp')
         os.mkdir('tmp')
-        with pkg_resources.path("omrexams.texmf", "omrexam.cls") as template_path:
-            # Copy the file to the temporary directory
-            click.secho(f'Copying omrexam.cls to tmp', fg='yellow')
-            copy2(template_path, 'tmp')
-            qr_eclevel = self.config.get('exam', {}).get('qr_eclevel', 'H')
-            qr_size = '2.8cm' if qr_eclevel == 'H' else '2.5cm'
-            cls_path = os.path.join('tmp', 'omrexam.cls')
-            with open(cls_path, 'r', encoding='utf-8') as f:
-                cls_content = f.read()
-            cls_content = re.sub(r'\\setlength\{\\OMR@BarcodeWidth\}\{.*?\}', lambda m: f'\\setlength{{\\OMR@BarcodeWidth}}{{{qr_size}}}', cls_content)
-            cls_content = re.sub(r'\\setlength\{\\OMR@BarcodeHeight\}\{.*?\}', lambda m: f'\\setlength{{\\OMR@BarcodeHeight}}{{{qr_size}}}', cls_content)
-            cls_content = re.sub(r'eclevel=[LMQH]', f'eclevel={qr_eclevel}', cls_content)
-            with open(cls_path, 'w', encoding='utf-8') as f:
-                f.write(cls_content)
+        self.prepare_template()
         click.secho(f'Generating {len(self.students)} exams (this may take a while)', fg='red', underline=True)
         with click.progressbar(length=len(self.students), label='Generating exams',
                                bar_template='%(label)s |%(bar)s| %(info)s',
@@ -443,22 +462,23 @@ class Generate:
         if self.config['exam'].get('max_open_questions', False):
             open_questions = open_questions[:self.config['exam'].get('max_open_questions')]
 
+        Renderer, StripRenderer = self.renderer_classes()
         if self.config.get('header'):
-            with DocumentStripRenderer(basedir=self.config.get('basedir')) as renderer:
+            with StripRenderer(basedir=self.config.get('basedir')) as renderer:
                 header = renderer.render(Document(self.config.get('header')))
         else:
             header = ''
         if self.config.get('preamble'):
-            with DocumentStripRenderer(basedir=self.config.get('basedir')) as renderer:
+            with StripRenderer(basedir=self.config.get('basedir')) as renderer:
                 preamble = renderer.render(Document(self.config.get('preamble')))
         else:
             preamble = ''
         if self.config.get('footer'):
-            with DocumentStripRenderer(basedir=self.config.get('basedir')) as renderer:
+            with StripRenderer(basedir=self.config.get('basedir')) as renderer:
                 footer = renderer.render(Document(self.config.get('footer')))
         else:
             footer = ''
-        with QuestionRenderer(language=self.config['exam'].get('language'),
+        with Renderer(language=self.config['exam'].get('language'),
                               date=self.exam_date, exam=self.config['exam'].get('name'),
                               student_no=student[0],
                               student_name=student[1] if student[1] != 'Additional student' else '_' * 20,
@@ -499,6 +519,7 @@ class Generate:
             db.table('exams').insert(data)
 
     def generate_test(self):
+        Renderer, StripRenderer = self.renderer_classes()
         rules = self.load_rules()
         self.topics = {}
         for r in sorted(rules.keys()):
@@ -506,17 +527,17 @@ class Generate:
         for n, t in self.topics.items():
             click.secho(f"Topics of {n} {len(t)}")
         if self.config.get('header'):
-            with DocumentStripRenderer(basedir=self.config.get('basedir')) as renderer:
+            with StripRenderer(basedir=self.config.get('basedir')) as renderer:
                 header = renderer.render(Document(self.config.get('header')))
         else:
             header = ''
         if self.config.get('preamble'):
-            with DocumentStripRenderer(basedir=self.config.get('basedir')) as renderer:
+            with StripRenderer(basedir=self.config.get('basedir')) as renderer:
                 preamble = renderer.render(Document(self.config.get('preamble')))
         else:
             preamble = ''
         if self.config.get('footer'):
-            with DocumentStripRenderer(basedir=self.config.get('basedir')) as renderer:
+            with StripRenderer(basedir=self.config.get('basedir')) as renderer:
                 footer = renderer.render(Document(self.config.get('footer')))
         else:
             footer = ''
@@ -526,7 +547,7 @@ class Generate:
             click.secho(f'Testing {os.path.basename(r)}', fg='cyan')
             with open(r, 'r', encoding='utf-8') as f:
                 current_questions = f.read()
-            with QuestionRenderer(language=self.config['exam'].get('language'),
+            with Renderer(language=self.config['exam'].get('language'),
                               date=dt.now(),
                               exam=self.config['exam'].get('name'),
                               header=header,
@@ -535,6 +556,7 @@ class Generate:
                               packages=self.config.get('packages', {}),
                               commands=self.config.get('commands', {}),
                               test=True,
+                              show_roi=self.config['exam'].get('show_roi', True),
                               circled=self.config.get('choices', {}).get('circled', False),
                               basedir=os.path.realpath(self.questions_path)) as renderer:
                 renderer.render(Document(current_questions))
@@ -543,21 +565,8 @@ class Generate:
         logger.info('Creating and preparing tmp directory')
         if not os.path.exists('tmp'):
            os.mkdir('tmp')
-        with pkg_resources.path("omrexams.texmf", "omrexam.cls") as template_path:
-            # Copy the file to the temporary directory
-            click.secho(f'Copying omrexam.cls to tmp', fg='yellow')
-            copy2(template_path, 'tmp')
-            qr_eclevel = self.config.get('exam', {}).get('qr_eclevel', 'H')
-            qr_size = '2.8cm' if qr_eclevel == 'H' else '2.5cm'
-            cls_path = os.path.join('tmp', 'omrexam.cls')
-            with open(cls_path, 'r', encoding='utf-8') as f:
-                cls_content = f.read()
-            cls_content = re.sub(r'\\setlength\{\\OMR@BarcodeWidth\}\{.*?\}', lambda m: f'\\setlength{{\\OMR@BarcodeWidth}}{{{qr_size}}}', cls_content)
-            cls_content = re.sub(r'\\setlength\{\\OMR@BarcodeHeight\}\{.*?\}', lambda m: f'\\setlength{{\\OMR@BarcodeHeight}}{{{qr_size}}}', cls_content)
-            cls_content = re.sub(r'eclevel=[LMQH]', f'eclevel={qr_eclevel}', cls_content)
-            with open(cls_path, 'w', encoding='utf-8') as f:
-                f.write(cls_content)
-        with QuestionRenderer(language=self.config['exam'].get('language'),
+        self.prepare_template()
+        with Renderer(language=self.config['exam'].get('language'),
                               date=dt.now(),
                               exam=self.config['exam'].get('name'),
                               student_no=0,
@@ -568,6 +577,7 @@ class Generate:
                               packages=self.config.get('packages', {}),
                               commands=self.config.get('commands', {}),
                               test=True,
+                              show_roi=self.config['exam'].get('show_roi', True),
                               circled=self.config.get('choices', {}).get('circled', False),
                               basedir=os.path.realpath(self.questions_path)) as renderer:
             document = renderer.render(Document(questions))
