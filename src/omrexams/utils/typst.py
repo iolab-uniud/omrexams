@@ -283,6 +283,11 @@ class TypstQuestionRenderer(TypstRenderer):
     def _document_source(self, inner, solution):
         parameters = self.parameters
         date = parameters["date"].strftime("%d/%m/%Y")
+        warning = parameters.get("warning", "")
+        warning_argument = f"  warning: [{warning}],\n" if warning else ""
+        qr_eclevel = str(parameters.get("qr_eclevel", "H")).upper()
+        if qr_eclevel not in {"L", "M", "Q", "H"}:
+            raise ValueError("qr_eclevel must be one of L, M, Q, or H")
         return (
             '#import "omrexam.typ": exam, question, mi, mitex\n\n'
             "#show: body => exam(\n"
@@ -293,6 +298,8 @@ class TypstQuestionRenderer(TypstRenderer):
             f"  solution: {_typst_string(solution)},\n"
             f"  header: [{parameters.get('header', '')}],\n"
             f"  footer: [{parameters.get('footer', '')}],\n"
+            f"{warning_argument}"
+            f"  qr-error-correction: {_typst_string(qr_eclevel)},\n"
             f"  show-roi: {str(parameters.get('show_roi', parameters.get('test', False))).lower()},\n"
             "  body,\n"
             ")\n\n"

@@ -478,6 +478,11 @@ class Generate:
                 footer = renderer.render(Document(self.config.get('footer')))
         else:
             footer = ''
+        if self.config.get('warning'):
+            with StripRenderer(basedir=self.config.get('basedir')) as renderer:
+                warning = renderer.render(Document(self.config.get('warning')))
+        else:
+            warning = ''
         with Renderer(language=self.config['exam'].get('language'),
                               date=self.exam_date, exam=self.config['exam'].get('name'),
                               student_no=student[0],
@@ -485,6 +490,8 @@ class Generate:
                               header=header,
                               preamble=preamble,
                               footer=footer,
+                              warning=warning,
+                              qr_eclevel=self.config['exam'].get('qr_eclevel', 'H'),
                               packages=self.config.get('packages', {}),
                               commands=self.config.get('commands', {}),
                               shuffle=self.config['exam'].get('shuffle_answers', True),
@@ -541,6 +548,11 @@ class Generate:
                 footer = renderer.render(Document(self.config.get('footer')))
         else:
             footer = ''
+        if self.config.get('warning'):
+            with StripRenderer(basedir=self.config.get('basedir')) as renderer:
+                warning = renderer.render(Document(self.config.get('warning')))
+        else:
+            warning = ''
 
         questions = ""
         for r in sorted(rules.keys()):
@@ -553,6 +565,8 @@ class Generate:
                               header=header,
                               preamble=preamble,
                               footer=footer,
+                              warning=warning,
+                              qr_eclevel=self.config['exam'].get('qr_eclevel', 'H'),
                               packages=self.config.get('packages', {}),
                               commands=self.config.get('commands', {}),
                               test=True,
@@ -574,6 +588,8 @@ class Generate:
                               header=header,
                               preamble=preamble,
                               footer=footer,
+                              warning=warning,
+                              qr_eclevel=self.config['exam'].get('qr_eclevel', 'H'),
                               packages=self.config.get('packages', {}),
                               commands=self.config.get('commands', {}),
                               test=True,

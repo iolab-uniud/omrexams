@@ -5,6 +5,9 @@
 #let barcode-size = 28mm
 #let crop-margin = 10mm
 #let vertical-margin = barcode-size + 15mm
+#let answer-area-left = 152.5mm
+#let separator-x = answer-area-left - 4mm
+#let text-area-height = 297mm - 2 * vertical-margin
 #let omr-gray = rgb("888888")
 
 #let registration-mark() = rect(width: marker-size / 2, height: marker-size / 2, fill: black)
@@ -49,12 +52,27 @@
   }
 }
 
-#let page-markers(student-data, show-roi) = {
+#let warning-box(body) = box(
+  width: 51.5mm,
+  inset: 3pt,
+  radius: 2pt,
+  stroke: 0.6pt + black,
+  grid(
+    columns: (12pt, 1fr),
+    column-gutter: 4pt,
+    align: horizon,
+    box(width: 10pt, height: 10pt, stroke: 0.6pt + black, inset: 0pt,
+      align(center + horizon, text(size: 7pt, weight: "bold", "!"))),
+    text(size: 7pt, body),
+  ),
+)
+
+#let page-markers(student-data, qr-error-correction, warning, show-roi) = {
   place(
     top + left,
     dx: crop-margin,
     dy: crop-margin,
-    qr-code(student-data, width: barcode-size, height: barcode-size, error-correction: "H"),
+    qr-code(student-data, width: barcode-size, height: barcode-size, error-correction: qr-error-correction),
   )
   place(top + right, dx: -crop-margin, dy: crop-margin, registration-mark())
   place(bottom + left, dx: crop-margin, dy: -crop-margin, registration-mark())
@@ -62,8 +80,19 @@
     bottom + right,
     dx: -crop-margin,
     dy: -crop-margin,
-    qr-code(page-qr-data(), width: barcode-size, height: barcode-size, error-correction: "H"),
+    qr-code(page-qr-data(), width: barcode-size, height: barcode-size, error-correction: qr-error-correction),
   )
+  place(
+    top + left,
+    dx: separator-x,
+    dy: vertical-margin,
+    line(
+      start: (0pt, 0pt),
+      end: (0pt, text-area-height),
+      stroke: (paint: omr-gray, thickness: 0.5pt, dash: "dotted"),
+    ),
+  )
+  place(top + left, dx: separator-x, dy: 14mm, warning-box(warning))
   roi-overlay(show-roi)
 }
 
@@ -95,6 +124,8 @@
   solution: "None",
   header: none,
   footer: none,
+  warning: [*Non scrivere in quest'area!* \ Usa solo per indicare le risposte definitive.],
+  qr-error-correction: "H",
   show-roi: false,
   body,
 ) = {
@@ -105,7 +136,9 @@
       pad(left: barcode-size + 2mm, header)
     },
     footer: footer,
-    foreground: context { page-markers(student-id + "," + solution, show-roi) },
+    foreground: context {
+      page-markers(student-id + "," + solution, qr-error-correction, warning, show-roi)
+    },
   )
   set text(size: 10pt)
   set par(justify: true)

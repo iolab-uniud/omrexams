@@ -20,6 +20,8 @@ def test_typst_renderer_preserves_answers_and_permutation():
         exam="Prova",
         student_no="123",
         student_name="Mario Rossi",
+        warning="Avvertenza personalizzata",
+        qr_eclevel="H",
         shuffle=False,
     )
 
@@ -29,6 +31,8 @@ def test_typst_renderer_preserves_answers_and_permutation():
     assert renderer.questions[0]["permutation"] == [0, 1]
     assert document.source.count("#question(") == 1
     assert "show-roi: false" in document.source
+    assert "warning: [Avvertenza personalizzata]" in document.source
+    assert 'qr-error-correction: "H"' in document.source
     assert '#mi("\\\\frac{2}{2} + 1")' in document.source
     assert "#block[#strong[A)] 3]" in document.source
     assert "#block[#strong[B)] 4]" in document.source
@@ -42,6 +46,18 @@ def test_typst_engine_rejects_latex_extensions(tmp_path):
 
     with pytest.raises(ValueError, match="LaTeX-specific"):
         Generate(config, str(tmp_path), str(tmp_path / "exam"), test=True)
+
+
+def test_typst_renderer_rejects_invalid_qr_error_correction():
+    renderer = TypstQuestionRenderer(
+        date=datetime(2026, 9, 11),
+        exam="Prova",
+        student_no="123",
+        qr_eclevel="invalid",
+    )
+
+    with pytest.raises(ValueError, match="qr_eclevel"):
+        renderer.render(Document(""))
 
 
 def test_typst_page_qr_payload_matches_decoder_contract():

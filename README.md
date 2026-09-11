@@ -31,6 +31,11 @@ exam:
 	engine: typst
 	name: Example exam
 	language: italian
+	qr_eclevel: H
+
+warning: |
+	**Non scrivere in quest'area!**
+	Usa solo per indicare le risposte definitive.
 ```
 
 The Typst backend preserves question and answer shuffling, encrypted answer QR
@@ -41,6 +46,9 @@ commands embedded in Markdown must likewise be replaced with portable Markdown
 or native Typst content.
 
 Typst packages are downloaded from Typst Universe on the first compilation.
+Both page QR codes use error-correction level `H`. The optional top-level
+`warning` value accepts Markdown and replaces the default Italian notice above
+the answer area.
 
 The `omrexams test` command shows the answer ROI by default when using Typst.
 Set `exam.show_roi: false` in the YAML configuration to hide it in test PDFs.
