@@ -84,10 +84,17 @@ replaced with portable Markdown or native Typst content.
 Typst packages are downloaded from Typst Universe on the first compilation.
 Both page QR codes use error-correction level `H`. The optional top-level
 `warning` value accepts Markdown and replaces the default Italian notice above
-the answer area.
+the answer area. The `exam.language` setting is also passed to Typst; for
+example, `italian` selects `lang: "it"`, enabling Italian hyphenation in the
+justified question text. Hyphenation is enabled explicitly in the Typst
+template.
 
 The `omrexams test` command shows the answer ROI by default when using Typst.
 Set `exam.show_roi: false` in the YAML configuration to hide it in test PDFs.
+
+Open questions can reserve visible dotted writing space with the shared Markdown
+syntax `{lines:5cm}`. Normal source line wrapping remains a soft break; use the
+standard Markdown hard break when a visible line break is required.
 
 Question answer lists preserve the existing Markdown layout convention in both
 backends: `- [ ]` and `+ [ ]` render vertically, while `* [ ]` and `1) [ ]`
@@ -98,8 +105,9 @@ and a generator for visual LaTeX/Typst output in A4 and folded A3 formats. The
 integration smoke tests run the same fixture through generation, artificial
 answer marking, `sort`, and `correct` for all four engine/paper combinations,
 both through the CLI and through direct Python calls. The fixture has four OMR
-pages and two open-question pages; the latter carry QR range `(0, 0)` and no
-answer markers.
+pages plus a dedicated long-text OMR page, followed by two open-question pages.
+The latter carry QR range `(0, 0)`, have no answer markers, and use the full
+printable width in the Typst backend.
 
 ## Python API
 

@@ -12,4 +12,4 @@ footer: "Fixture visuale del workflow generate, sort e correct."
 
 questions:
   - from: questions.md
-    draw: 8
+    draw: 9

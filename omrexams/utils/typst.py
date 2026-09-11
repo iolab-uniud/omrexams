@@ -22,6 +22,10 @@ from .markdown import (
 
 
 MAX_ANSWERS = 7
+TYPST_LANGUAGE_ALIASES = {
+    "english": "en",
+    "italian": "it",
+}
 
 
 def _typst_string(value):
@@ -113,8 +117,8 @@ class TypstRenderer(BaseRenderer):
     def render_thematic_break(self, _token):
         return "\n#line(length: 100%)\n"
 
-    def render_line_break(self, _token):
-        return " \\\n"
+    def render_line_break(self, token):
+        return " " if token.soft else " \\\n"
 
     def render_escape_sequence(self, token):
         return self.render_inner(token)
@@ -191,7 +195,7 @@ class TypstQuestionRenderer(TypstRenderer):
         match = re.match(r"\\fillwithdottedlines\{([0-9.]+)([^}]+)\}", token.lines)
         if not match:
             return ""
-        return f"#v({match.group(1)}{match.group(2)}, weak: false)"
+        return f"#answer-lines({match.group(1)}{match.group(2)})"
 
     def render_question_block(self, token):
         self.questions.append(
@@ -292,18 +296,21 @@ class TypstQuestionRenderer(TypstRenderer):
     def _document_source(self, inner, solution):
         parameters = self.parameters
         date = parameters["date"].strftime("%d/%m/%Y")
+        language = str(parameters.get("language") or "en").lower()
+        language = TYPST_LANGUAGE_ALIASES.get(language, language)
         warning = parameters.get("warning", "")
         warning_argument = f"  warning: [{warning}],\n" if warning else ""
         qr_eclevel = str(parameters.get("qr_eclevel", "H")).upper()
         if qr_eclevel not in {"L", "M", "Q", "H"}:
             raise ValueError("qr_eclevel must be one of L, M, Q, or H")
         return (
-            '#import "omrexam.typ": exam, question, mi, mitex\n\n'
+            '#import "omrexam.typ": answer-lines, exam, question, mi, mitex\n\n'
             "#show: body => exam(\n"
             f"  student-id: {_typst_string(parameters.get('student_no', ''))},\n"
             f"  student-name: {_typst_string(parameters.get('student_name', ''))},\n"
             f"  exam-name: {_typst_string(parameters.get('exam', ''))},\n"
             f"  exam-date: {_typst_string(date)},\n"
+            f"  language: {_typst_string(language)},\n"
             f"  solution: {_typst_string(solution)},\n"
             f"  header: [{parameters.get('header', '')}],\n"
             f"  footer: [{parameters.get('footer', '')}],\n"

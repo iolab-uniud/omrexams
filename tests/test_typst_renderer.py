@@ -26,6 +26,7 @@ def test_typst_renderer_preserves_answers_and_permutation():
         exam="Prova",
         student_no="123",
         student_name="Mario Rossi",
+        language="italian",
         warning="Avvertenza personalizzata",
         qr_eclevel="H",
         shuffle=False,
@@ -39,6 +40,7 @@ def test_typst_renderer_preserves_answers_and_permutation():
     assert "show-roi: false" in document.source
     assert "warning: [Avvertenza personalizzata]" in document.source
     assert 'qr-error-correction: "H"' in document.source
+    assert 'language: "it"' in document.source
     assert '#mi("\\\\frac{2}{2} + 1")' in document.source
     assert "#block[#strong[A)] 3]" in document.source
     assert "#block[#strong[B)] 4]" in document.source
@@ -64,6 +66,29 @@ def test_typst_renderer_supports_horizontal_answers_and_inline_title():
     assert '#question(1, ("A", "B", "C",), [Titolo sulla riga del numero])[' in document.source
     assert "#grid(columns: (1fr,) * 3" in document.source
     assert "#block[#strong[A)]" not in document.source
+
+
+def test_typst_renderer_wraps_soft_breaks_and_draws_answer_lines():
+    source = """---
+### Domanda aperta
+Prima riga nel sorgente
+che continua nello stesso paragrafo.
+
+{lines:2.5cm}
+---
+"""
+    renderer = TypstQuestionRenderer(
+        date=datetime(2026, 9, 11),
+        exam="Prova",
+        student_no="123",
+        language="italian",
+        shuffle=False,
+    )
+
+    document = renderer.render(Document(source))
+
+    assert "Prima riga nel sorgente che continua nello stesso paragrafo." in document.source
+    assert "#answer-lines(2.5cm)" in document.source
 
 
 def test_typst_engine_rejects_latex_extensions(tmp_path):

@@ -11,8 +11,8 @@ from tinydb import Query, TinyDB
 
 from omrexams.utils import qrdecoder
 
-EXPECTED_ANSWERS = [["A"], ["B"], ["B"], ["C"], ["C"], ["D"], ["D"], ["A"]]
-EXPECTED_RANGES = [(1, 2), (3, 4), (5, 6), (7, 8), (0, 0), (0, 0)]
+EXPECTED_ANSWERS = [["A"], ["B"], ["B"], ["C"], ["C"], ["D"], ["D"], ["A"], ["C"]]
+EXPECTED_RANGES = [(1, 2), (3, 4), (5, 6), (7, 8), (9, 9), (0, 0), (0, 0)]
 EXAMPLE_SCRIPT = Path(__file__).parents[1] / "examples" / "generate_examples.py"
 EXAMPLE_SPEC = importlib.util.spec_from_file_location("generate_examples", EXAMPLE_SCRIPT)
 assert EXAMPLE_SPEC is not None and EXAMPLE_SPEC.loader is not None
@@ -53,16 +53,17 @@ def test_generate_sort_correct_workflow(engine, paper, interface, tmp_path):
     exam_pdf = destination / "exam.pdf"
     corrected_pdf = destination / "corrected.pdf"
     sorted_pages = sorted((destination / "sorted").glob("*.png"))
-    expected_sheets = 6 if paper == "a4" else 4
+    expected_sheets = 8 if paper == "a4" else 4
     assert len(PdfReader(exam_pdf).pages) == expected_sheets
-    assert len(sorted_pages) == 6
-    assert len(PdfReader(corrected_pdf).pages) == 6
+    assert len(sorted_pages) == 7
+    assert len(PdfReader(corrected_pdf).pages) == 7
 
     page_metadata = [qrdecoder.decode(cv2.imread(str(page))) for page in sorted_pages]
     page_metadata.sort(key=lambda metadata: metadata["page"])
     assert [metadata["range"] for metadata in page_metadata] == EXPECTED_RANGES
 
     exam_text = "\n".join(page.extract_text() or "" for page in PdfReader(exam_pdf).pages)
+    assert "Lorem ipsum dolor sit amet" in exam_text
     assert "Progetta una funzione di validazione" in exam_text
     assert "Analizza una scelta progettuale" in exam_text
 
@@ -71,4 +72,4 @@ def test_generate_sort_correct_workflow(engine, paper, interface, tmp_path):
 
     assert correction is not None
     assert correction["given_answers"] == EXPECTED_ANSWERS
-    assert correction["doubtful"] == [False] * 8
+    assert correction["doubtful"] == [False] * 9

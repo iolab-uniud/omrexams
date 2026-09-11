@@ -30,5 +30,6 @@ destination = generate_engine("typst", "A4", Path("examples/generated"))
 The automated equivalent is `tests/test_exam_workflow.py`. It verifies LaTeX
 and Typst on A4 and folded A3 through both subprocess and direct function calls,
 passes `paper=A3` to both generation and sorting, and checks all artificially
-marked answers after correction. Every exam contains four OMR pages followed by
-two open-question pages with no answer markers.
+marked answers after correction. Every exam contains five OMR pages, including
+a dedicated long-text layout example, followed by two open-question pages with
+no answer markers.

@@ -15,6 +15,7 @@ from tinydb import TinyDB, Query
 import copy
 from shutil import rmtree
 import logging
+from queue import Empty
 
 logger = logging.getLogger("omrexams")
 
@@ -81,6 +82,7 @@ class Sort:
                     if self.progress_callback:
                         self.progress_callback(self.results.value, pages, 'Dispatching scanned exams')
                     prev = self.results.value
+            pool.join()
         with self.results_mutex:
             if not self.page_leftovers.empty():
                 click.secho('There are page leftovers, merging them', fg='red', err=True)
@@ -95,8 +97,11 @@ class Sort:
         click.secho('Finished', fg='red', underline=True)
 
         discarded = []
-        while not self.discarded_pages.empty():
-            discarded.append(self.discarded_pages.get())
+        while True:
+            try:
+                discarded.append(self.discarded_pages.get_nowait())
+            except Empty:
+                break
         return discarded
 
     def worker_main(self):

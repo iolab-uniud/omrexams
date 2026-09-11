@@ -100,6 +100,7 @@
   student-name,
   student-id,
 ) = {
+  let has-questions = page-questions().len() > 0
   place(
     top + left,
     dx: crop-margin,
@@ -120,17 +121,19 @@
     dy: -crop-margin,
     qr-code(page-qr-data(), width: barcode-size, height: barcode-size, error-correction: qr-error-correction),
   )
-  place(
-    top + left,
-    dx: separator-x,
-    dy: vertical-margin,
-    line(
-      start: (0pt, 0pt),
-      end: (0pt, text-area-height),
-      stroke: (paint: omr-gray, thickness: 0.5pt, dash: "dotted"),
-    ),
-  )
-  place(top + left, dx: separator-x, dy: 14mm, warning-box(warning))
+  if has-questions {
+    place(
+      top + left,
+      dx: separator-x,
+      dy: vertical-margin,
+      line(
+        start: (0pt, 0pt),
+        end: (0pt, text-area-height),
+        stroke: (paint: omr-gray, thickness: 0.5pt, dash: "dotted"),
+      ),
+    )
+    place(top + left, dx: separator-x, dy: 14mm, warning-box(warning))
+  }
   roi-overlay(show-roi)
 }
 
@@ -154,11 +157,27 @@
   ),
 )
 
+#let answer-lines(height, spacing: 7mm, top-gap: 3mm) = {
+  let count = int(calc.floor((height - top-gap) / spacing))
+  block(width: 100%, height: height)[
+    #v(top-gap, weak: false)
+    #grid(
+      columns: (1fr,),
+      rows: (spacing,) * count,
+      ..range(count).map(_ => line(
+        length: 100%,
+        stroke: (paint: omr-gray, thickness: 0.4pt, dash: "dotted"),
+      )),
+    )
+  ]
+}
+
 #let exam(
   student-id: "",
   student-name: "",
   exam-name: "",
   exam-date: "",
+  language: "en",
   solution: "None",
   header: none,
   footer: none,
@@ -186,7 +205,7 @@
       )
     },
   )
-  set text(size: 10pt)
+  set text(size: 10pt, lang: language, hyphenate: true)
   set par(justify: true)
   body
 }
@@ -194,7 +213,7 @@
 #let question(number, answers, title, body) = {
   let has-markers = answers.len() > 0
   block(
-    width: 100%,
+    width: if has-markers { 100% } else { 190mm },
     breakable: not has-markers,
   )[
     #if has-markers [

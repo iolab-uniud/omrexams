@@ -16,7 +16,7 @@ from omrexams.utils import qrdecoder
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "generated"
-ANSWER_INDEXES = (0, 1, 1, 2, 2, 3, 3, 0)
+ANSWER_INDEXES = (0, 1, 1, 2, 2, 3, 3, 0, 2)
 
 
 def mark_answers(image_path, answer_indexes):
@@ -79,7 +79,7 @@ def generate_engine(engine, paper="A4", output=OUTPUT):
         str(sorted_dir),
         str(prefix.with_suffix(".json")),
     ).sort(300, paper)
-    expected_discarded = 0 if paper == "A4" else 2
+    expected_discarded = 1
     if len(discarded) != expected_discarded:
         raise RuntimeError(f"Discarded pages for {engine}: {discarded}")
 
