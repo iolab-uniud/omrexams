@@ -40,10 +40,11 @@ warning: |
 
 The Typst backend preserves question and answer shuffling, encrypted answer QR
 codes, per-page OMR geometry QR codes, images, code blocks, open questions, and
-PDF collation. The `packages` and `commands` configuration keys contain raw
-LaTeX and are therefore rejected when the Typst engine is selected. Raw LaTeX
-commands embedded in Markdown must likewise be replaced with portable Markdown
-or native Typst content.
+PDF collation. Code blocks are rendered with Codly, including syntax
+highlighting, line numbers, and language labels. The `packages` and `commands`
+configuration keys contain raw LaTeX and are therefore rejected when the Typst
+engine is selected. Raw LaTeX commands embedded in Markdown must likewise be
+replaced with portable Markdown or native Typst content.
 
 Typst packages are downloaded from Typst Universe on the first compilation.
 Both page QR codes use error-correction level `H`. The optional top-level

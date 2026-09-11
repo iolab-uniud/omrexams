@@ -199,8 +199,8 @@ class TypstQuestionRenderer(TypstRenderer):
         )
         inner = self.render_inner(token)
         prefix = ""
-        if "[NEWPAGE]" in inner:
-            inner = inner.replace("[NEWPAGE]", "")
+        if "\\[NEWPAGE\\]" in inner:
+            inner = inner.replace("\\[NEWPAGE\\]", "")
             prefix = "#pagebreak()\n"
         if not self.questions[-1]["question"]:
             return inner

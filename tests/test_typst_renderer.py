@@ -1,6 +1,12 @@
 from datetime import datetime
+from importlib import resources
+import shutil
+import subprocess
 
+import cv2
 import pytest
+from pypdf import PdfReader
+import zxingcpp
 
 from omrexams.generate import Generate
 from omrexams.utils.markdown import Document
@@ -91,3 +97,102 @@ def test_typst_test_document_enables_roi_and_disables_shuffle():
 
     assert renderer.questions[0]["permutation"] == [0, 1]
     assert "show-roi: true" in document.source
+
+
+def test_typst_multipage_qr_payloads_match_page_questions(tmp_path):
+    assert shutil.which("typst"), "typst executable is required for integration tests"
+    pdftoppm = shutil.which("pdftoppm")
+    assert pdftoppm, "pdftoppm executable is required for integration tests"
+
+    blocks = []
+    for number in range(1, 7):
+        new_page = "[NEWPAGE]\n" if number in (3, 5) else ""
+        code = ""
+        if number == 2:
+            code = (
+                "Valuta `square(4)` nel seguente frammento:\n\n"
+                "```python\n"
+                "def square(value):\n"
+                "    return value * value\n"
+                "```\n"
+            )
+        elif number == 4:
+            code = (
+                "Considera questo ciclo:\n\n"
+                "```c\n"
+                "for (int index = 0; index < 3; ++index) {\n"
+                "    total += index;\n"
+                "}\n"
+                "```\n"
+            )
+        blocks.append(
+            f"---\n{new_page}## Domanda {number}\n"
+            f"{code}"
+            "- [x] Corretta\n"
+            "- [ ] Errata\n"
+        )
+    blocks.append(
+        "---\n[NEWPAGE]\n## Domanda aperta\n"
+        "Questa risposta può continuare sulla pagina seguente.\n"
+    )
+
+    renderer = TypstQuestionRenderer(
+        date=datetime(2026, 9, 11),
+        exam="Prova multipagina",
+        student_no="42",
+        student_name="Mario Rossi",
+        qr_eclevel="H",
+        shuffle=False,
+    )
+    document = renderer.render(Document("".join(blocks)))
+    assert document.source.count("#pagebreak()") == 3
+    assert '#raw(block: true, lang: "python"' in document.source
+    assert '#raw(block: true, lang: "c"' in document.source
+
+    template = resources.files("omrexams").joinpath("typst", "omrexam.typ")
+    (tmp_path / "omrexam.typ").write_bytes(template.read_bytes())
+    output = tmp_path / "multipage"
+    document.generate_pdf(str(output))
+
+    pdf = PdfReader(output.with_suffix(".pdf"))
+    assert len(pdf.pages) == 4
+    expected_questions = ((1, 2), (3, 4), (5, 6), (0, 0))
+
+    subprocess.run(
+        [pdftoppm, "-png", "-r", "144", str(output.with_suffix(".pdf")), str(output)],
+        check=True,
+        capture_output=True,
+    )
+
+    for page_number, expected_range in enumerate(expected_questions, start=1):
+        image = cv2.imread(str(tmp_path / f"multipage-{page_number}.png"))
+        assert image is not None
+        codes = [
+            code
+            for code in zxingcpp.read_barcodes(image)
+            if code.format == zxingcpp.BarcodeFormat.QRCode
+        ]
+        assert len(codes) == 2
+
+        top_left = next(code for code in codes if code.text.startswith("42,"))
+        bottom_right = next(code for code in codes if code is not top_left)
+        metadata = decode_bottom_right(bottom_right.text)
+
+        assert metadata is not None
+        assert metadata["page"] == page_number
+        assert metadata["range"] == expected_range
+        assert metadata["qrwidth"] == 539
+        assert metadata["qrheight"] == 785
+        assert metadata["bsize"] == 14
+
+        page_text = pdf.pages[page_number - 1].extract_text()
+        if expected_range == (0, 0):
+            assert "Domanda aperta" in page_text
+        else:
+            for question_number in expected_range:
+                assert f"Domanda {question_number}" in page_text
+        if page_number == 1:
+            assert "def square" in page_text
+            assert "square(4)" in page_text
+        if page_number == 2:
+            assert "for (int index" in page_text

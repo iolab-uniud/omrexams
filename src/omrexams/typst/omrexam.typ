@@ -1,4 +1,5 @@
 #import "@preview/cades:0.3.1": qr-code
+#import "@preview/codly:1.3.0": codly-init
 #import "@preview/mitex:0.2.7": mi, mitex
 
 #let marker-size = 14pt
@@ -129,6 +130,7 @@
   show-roi: false,
   body,
 ) = {
+  show: codly-init.with()
   set page(
     paper: "a4",
     margin: (top: vertical-margin, bottom: vertical-margin, left: 10mm, right: 62.5mm),
@@ -154,11 +156,16 @@
   body
 }
 
-#let question(number, answers, body) = block(
-  width: 100%,
-  breakable: false,
-)[
-  #metadata(number)<omr-question>
-  #place(dx: 142.5mm + marker-size / 4, omr-row(number, answers))
-  *#number.* #body
-]
+#let question(number, answers, body) = {
+  let has-markers = answers.len() > 0
+  block(
+    width: 100%,
+    breakable: not has-markers,
+  )[
+    #if has-markers [
+      #metadata(number)<omr-question>
+      #place(dx: 142.5mm + marker-size / 4, omr-row(number, answers))
+    ]
+    *#number.* #body
+  ]
+}
