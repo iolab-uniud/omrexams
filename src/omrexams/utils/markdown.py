@@ -12,11 +12,27 @@ import click
 import os
 import xml.etree.ElementTree as ET
 import base64
+from urllib.parse import unquote
 from itertools import chain
 from enum import Enum
 
 MAX_ANSWERS = 7
 logger = logging.getLogger("omrexams")
+
+def _image_latex(token, basedir, packages):
+    def plain_text(node):
+        if hasattr(node, 'children'):
+            return ''.join(plain_text(child) for child in node.children)
+        return node.content
+
+    packages['graphicx'] = []
+    packages['adjustbox'] = ['export']
+    source = unquote(token.src)
+    path = source if os.path.isabs(source) else os.path.join(basedir, source)
+    options = re.findall(r'((?:width|height|scale)=\d+\.?\d*\w*)', plain_text(token))
+    options.append(r'max width=\linewidth')
+    return '\n\\includegraphics[{}]{{{}}}\n'.format(
+        ','.join(options), path)
 
 class PreambleEnvironment(pylatex.base_classes.Environment):
     """
@@ -148,6 +164,8 @@ class QuestionRenderer(LaTeXRenderer):
         """
         self.record_answers = False
         self.questions = []
+        self._omr_marker_heading = None
+        self._omr_marker_list = None
         # TODO: check parameter coherence
         self.parameters = kwargs
         super().__init__(*chain([QuestionMarker, QuestionTopic, QuestionList, QuestionBlock, Lines, LatexCommand, LatexFormula, SaytexFormula], extras))
@@ -195,23 +213,42 @@ class QuestionRenderer(LaTeXRenderer):
         return token.content
 
     def render_image(self, token):
-        alt_template = r'((?:width|height|scale)=\d+\.?\d*\w*)'
-        self.packages['graphicx'] = []
-        self.packages['adjustbox'] = ['export']
-        path = os.path.join(token.src)
-        if not os.path.isabs(path):
-            path = os.path.join(self.parameters.get('basedir'), path)
-        alt = re.findall(alt_template, self.render_to_plain(token))
-        if alt:
-            return f'\n\\includegraphics[{",".join(a for a in alt)}]{{{path}}}\n'
-        else:
-            return f'\n\\includegraphics[max width=\\linewidth]{{{path}}}\n'
+        return _image_latex(token, self.parameters.get('basedir'), self.packages)
+
+    def render_raw_text(self, token, escape=True):
+        text = super().render_raw_text(token, escape)
+        if not escape:
+            return text
+
+        def break_long_word(match):
+            word = match.group()
+            return r'\allowbreak{}'.join(word[i:i + 8] for i in range(0, len(word), 8))
+
+        return re.sub(r'(?<![\w\\])[^\W_]{20,}(?!\w)', break_long_word, text)
+
+    def render_inline_code(self, token):
+        if 'fvextra' not in self.parameters.get('packages', {}):
+            self.packages['fvextra'] = []
+        verbatim = super().render_inline_code(token)
+        return r'\Verb[breaklines,breakanywhere]' + verbatim[len(r'\verb'):]
 
     def render_question_block(self, token):
         # possibly, the first question could start without a marker
         # and could contain the heading of the section
         self.questions.append({ 'question': "", 'answers': [], 'permutation': [], 'type': None })
-        inner = self.render_inner(token)
+        heading = None
+        for child in token.children:
+            if isinstance(child, block_token.Heading) and child.level == 2:
+                heading = child
+            elif heading is not None and isinstance(child, QuestionList):
+                self._omr_marker_heading = heading
+                self._omr_marker_list = child
+                break
+        try:
+            inner = self.render_inner(token)
+        finally:
+            self._omr_marker_heading = None
+            self._omr_marker_list = None
         prefix = ''
         if '[NEWPAGE]' in inner:
             inner = inner.replace('[NEWPAGE]', '')
@@ -222,6 +259,12 @@ class QuestionRenderer(LaTeXRenderer):
         cells = [self.render(child) for child in token.children]
         return ' & '.join(cells) + ' \\\\\n'
 
+    def render_table(self, token):
+        return ('\n\\par\\noindent\n'
+                + r'\begin{adjustbox}{max width=\linewidth}' + '\n'
+                + super().render_table(token)
+                + '\\end{adjustbox}\n\\par\n')
+
     def render_heading(self, token):
         if token.level == 1:
             if self.parameters.get('test', False):
@@ -231,10 +274,12 @@ class QuestionRenderer(LaTeXRenderer):
         if token.level > 2:
             inner = self.render_inner(token).strip()
             return f'\\textbf{{Q:}} {inner}\n'
-        template = "\\question\n{inner}"
+        marker = ''
+        if token is self._omr_marker_heading and self._omr_marker_list is not None:
+            marker = f'\\omrchoices{{{len(self._omr_marker_list.children)}}}\n'
         inner = self.render_inner(token).strip()
         self.questions[-1]['question'] = inner
-        return template.format(inner=inner)
+        return f"\\question\n{marker}{inner}"
 
     def render_list(self, token):
         self.packages['listings'] = []
@@ -256,6 +301,8 @@ class QuestionRenderer(LaTeXRenderer):
     def render_question_list(self, token):
         #if not self.parameters.get('test', False):
         template = " \\omrchoices{{{choiceno}}}\n\\begin{{choices}}\n{inner}\n\\end{{choices}}\n"
+        if token is self._omr_marker_list:
+            template = "\\begin{{choices}}\n{inner}\n\\end{{choices}}\n"
         #else:
         #    template = "\n\\begin{{choices}}\n{inner}\n\\end{{choices}}\n"
         self.record_answers = True
@@ -269,7 +316,7 @@ class QuestionRenderer(LaTeXRenderer):
             click.secho(f'Too many answers for question "{self.questions[-1]["question"]}" ({len(answers)})', fg="yellow")
         self.record_answers = False
         # lists starting with * or numbered as 1) are treated as inline
-        if token.leader == '*' or token.leader.endswith(')'):
+        if token.leader == '*' or token.leader.endswith(')') or self.parameters.get('oneparchoices', False):
             template = template.replace('{choices}', '{oneparchoices}')
             template = template.replace('\\begin', '\\par\n\\begin')
             template += '\n\\vspace{{\\baselineskip}}\n'
@@ -340,6 +387,8 @@ class QuestionRenderer(LaTeXRenderer):
             options.append('sflabel')
         if self.parameters.get('dyslexia'):
             options.append('dyslexia')
+        if self.parameters.get('easyreading', False):
+            options.append('easyreading')
 
         doc = pylatex.Document('basic')
         doc.documentclass = pylatex.Command('documentclass',
@@ -357,8 +406,11 @@ class QuestionRenderer(LaTeXRenderer):
             else:
                 doc.preamble.append(pylatex.Package(package, options=options))
         doc.preamble.append(pylatex.Command('examname', self.parameters.get('exam', '')))
+        student_no = self.parameters['student_no']
+        if re.fullmatch(r'[\d-]+', str(student_no)):
+            student_no = pylatex.NoEscape(str(student_no))
         doc.preamble.append(pylatex.Command('student',
-            arguments=[self.parameters['student_no'], self.parameters['student_name']]))
+            arguments=[student_no, self.parameters['student_name']]))
         doc.preamble.append(pylatex.Command('date', self.parameters['date'].strftime('%d/%m/%Y')))
         doc.preamble.append(pylatex.Command('solution', solutions))
         doc.preamble.append(pylatex.Command('header', pylatex.NoEscape(self.parameters.get('header', ''))))
@@ -384,8 +436,14 @@ class QuestionRenderer(LaTeXRenderer):
         #doc = pylatex.Document(documentclass='omrexam',
         #    inputenc=None, lmodern=False, fontinc=None, textcomp=None)
         doc = pylatex.Document('basic')
+        options = ['testing']
+        if self.parameters.get('dyslexia'):
+            options.append('dyslexia')
+            inner = inner.replace('{oneparchoices}', '{choices}')
+        if self.parameters.get('easyreading', False):
+            options.append('easyreading')
         doc.documentclass = pylatex.Command('documentclass',
-            options=['testing'],
+            options=options,
             arguments=['omrexam']
         )
         doc.preamble.append(pylatex.Package('polyglossia'))
@@ -438,12 +496,7 @@ class DocumentStripRenderer(LaTeXRenderer):
                 ) if escape else token.content
 
     def render_image(self, token):
-        self.packages['graphicx'] = []
-        self.packages['adjustbox'] = ['export']
-        path = os.path.join(token.src)
-        if not os.path.isabs(path):
-            path = os.path.join(self.parameters.get('basedir'), path)
-        return f'\n\\includegraphics[max width=\\linewidth]{{{path}}}\n'
+        return _image_latex(token, self.parameters.get('basedir'), self.packages)
 
 """
 Provides MathJax support for rendering Markdown with LaTeX to html.

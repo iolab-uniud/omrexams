@@ -10,7 +10,7 @@ import click
 
 logger = logging.getLogger("omrexams")
 
-TOP_LEFT_REGEX = r'^(?P<id>[\d-]+),(?P<sequence>.+)$'
+TOP_LEFT_REGEX = r'^(?P<id>(?:[\d-]|\{-\})+),(?P<sequence>.+)$'
 BOTTOM_RIGHT_REGEX = r'^\((?P<x0>\d+),\s*(?P<y0>\d+)\)-\((?P<x1>\d+),\s*(?P<y1>\d+)\)/\((?P<qrwidth>\d+),\s*(?P<qrheight>\d+)\)/(?P<bsize>\d+(?:\.\d+)?),\s*(?P<page>\d+)(?:,(?P<start>\d+)-(?P<end>\d+))?$'
 
 available_libraries = ['openCV']
@@ -56,6 +56,7 @@ def decode_top_left(data):
     m = re.search(TOP_LEFT_REGEX, data)
     if not m:
         return None
+    student_id = m.group('id').replace('{-}', '-')
     # check if the correct sequence is encoded or in clear
     allowed_in_clear = ("".join(chr(i + ord('a')) for i in range(8)) + ",").upper()
     if not m.group('sequence'):
@@ -63,11 +64,11 @@ def decode_top_left(data):
     elif all(c.upper() in allowed_in_clear for c in m.group('sequence')):
         correct = m.group('sequence').split(',')
     else:
-        correct = list(c.upper() for c in binary_decrypt(m.group('sequence'), m.group('id')))
+        correct = list(c.upper() for c in binary_decrypt(m.group('sequence'), student_id))
 
     return {
         # CHECK: removed int across student_id
-        'student_id': m.group('id'),
+        'student_id': student_id,
         'correct': correct
     }
 

@@ -75,4 +75,7 @@ Homepage = "https://iolab.uniud.it"
 where = ["src"]  # or "" if omrexams is in the root
 include = ["omrexams*"]
 
+[tool.setuptools.package-data]
+"omrexams.texmf" = ["fonts/*"]
+
 

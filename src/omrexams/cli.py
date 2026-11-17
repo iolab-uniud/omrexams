@@ -99,16 +99,17 @@ def cli(ctx, debug):
     help='The output prefix (i.e., the name of the pdf and json data files) [default: \'exam-{date}{{.pdf|.json}}\'')
 @click.option('--date', '-d', type=DATETIME, prompt='Enter the exam date',  
     default=lambda: dt.now().strftime("%Y-%m-%d"))
-@click.option('--seed', '-r', type=int, default=int(dt.now().strftime('%s')))
+@click.option('--seed', '-r', type=int, default=None, help='Override the configuration seed (default: 42).')
 @click.option('--additional', '-a', type=int, required=False, default=0, help='Number of additional exam sheets')
 @click.option('--paper', '-p', type=click.Choice(['A4', 'A3'], case_sensitive=False), default='A4', required=False)
 @click.option('--folded/--no-folded', is_flag=True, default=None, help='State whether the exam sheets are folded (only for A3 paper)')
 @click.option('--rotated/--no-rotated', is_flag=True, default=None, help='State whether the exam folded sheets are alternatively rotated (only for A3 paper)')
 @click.option('--split', type=int, help='Divide the output into multiple files by splitting', required=False)
+@click.option('--check-overfull', is_flag=True, help='Warn about significant LaTeX overfull boxes.')
 @click.option('--yes', '-y', is_flag=True, type=bool, required=False, default=False, help='Answer yes to all prompt requests')
 @click.option('--dry-run', is_flag=True, type=bool, required=False, help='If set, the generation is not performed', default=False)
 @click.pass_context
-def generate(ctx, config, students, questions_dir, count, serial, output_prefix, date, seed, additional, paper, folded, rotated, split, yes, dry_run):
+def generate(ctx, config, students, questions_dir, count, serial, output_prefix, date, seed, additional, paper, folded, rotated, split, check_overfull, yes, dry_run):
     """
     Generates the set of exams for the given amount of students (either personalized or anonymous).
     """
@@ -133,9 +134,18 @@ def generate(ctx, config, students, questions_dir, count, serial, output_prefix,
         sys.exit(-1)
 
     config_file = config
-    with open(config_file, 'r') as f:
-        config = yaml.load(f, Loader=yaml.Loader)
+    from .configuration import load_config
+    try:
+        config = load_config(config_file)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
     config['basedir'] = os.path.dirname(config_file)
+    seed = config["seed"] if seed is None else seed
+    from .profiles import validate_profiles
+    try:
+        validate_profiles(config)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     dyslexia = config.get('dyslexia', False)
 
     if not output_prefix and not dyslexia:
@@ -180,7 +190,7 @@ def generate(ctx, config, students, questions_dir, count, serial, output_prefix,
             click.secho('Reading excel file', fg='red', underline=True)
             skip = 0
             # check whether the file needs to be partially skipped
-            if config['excel'].get('data_marker') is not None:
+            if not config.get("profiles") and (config['excel'].get('data_marker') or {}).get('skip_until'):
                 marker = config['excel']['data_marker'].get('skip_until')
                 column = config['excel']['data_marker'].get('on_column', 0)
                 click.secho(f'Searching for data marker "{marker} in column {column}"', fg='cyan')
@@ -210,12 +220,21 @@ def generate(ctx, config, students, questions_dir, count, serial, output_prefix,
                             break
             if skip > 0:
                 click.secho(f'Skipping {skip} rows', fg='cyan')
-            student_list = pd.read_excel(students, skiprows=skip + 1)
+            if config.get("profiles"):
+                from .students import read_student_dataframe
+                student_list, first_data_row = read_student_dataframe(students, config["excel"].get("data_marker"))
+            else:
+                student_list = pd.read_excel(students, skiprows=skip + 1)
+                first_data_row = skip + 3
+            from .profiles import select_student_profiles
+            profiles = select_student_profiles(student_list, config, first_data_row=first_data_row)
             click.secho(f'Columns found: {student_list.columns.tolist()}', fg='cyan')
             fields = config['excel']['fields']
             student_list[fields.get('fullname', 'Full Name')] = student_list[fields.get('name')] + ' ' + student_list[fields.get('surname')]
             student_list.reset_index(inplace=True)
             student_list = [tuple(r) for r in student_list[[fields.get('id'), fields.get('fullname', 'Full Name')]].to_records(index=False)] 
+            if config.get("profiles"):
+                student_list = [(*student, profile) for student, profile in zip(student_list, profiles)]
             click.secho(f'Processing done, {len(student_list)} students found', fg='cyan')
             if additional > 0:                
                 student_list += [(i, "Additional student") for i in range(additional)]
@@ -234,16 +253,50 @@ def generate(ctx, config, students, questions_dir, count, serial, output_prefix,
         click.secho("Dry run selected, exam generation not performed", fg='yellow')
         sys.exit(0)
     generator = Generate(config, questions_dir, output_prefix, students=student_list, 
-                         exam_date=date, seed=seed, paper=paper, folded=folded, rotated=rotated, split=split)
+                         exam_date=date, seed=seed, paper=paper, folded=folded, rotated=rotated, split=split,
+                         check_overfull=check_overfull)
     generator.process()
+
+@cli.command("check-qrs")
+@click.argument("pdf", type=click.Path(exists=True, dir_okay=False, resolve_path=True))
+@click.option("--json-file", type=click.Path(exists=True, dir_okay=False, resolve_path=True),
+              help="Generation JSON; by default use the JSON beside the PDF.")
+@click.option("--json-output", is_flag=True, help="Print the validation report as JSON.")
+@click.pass_context
+def check_qrs(ctx, pdf, json_file, json_output):
+    """Check original A4 QR codes and correction keys against the generation JSON."""
+    from pypdf.errors import PdfReadError
+    from wand.exceptions import WandException
+    from .qr_validation import validate_exam_qrs
+
+    if not json_output:
+        click.echo("Verifica QR e chiavi di correzione...")
+    try:
+        report = validate_exam_qrs(pdf, json_path=json_file)
+    except (OSError, ValueError, PdfReadError, WandException) as exc:
+        raise click.ClickException(str(exc)) from exc
+    if json_output:
+        click.echo(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        click.echo(f"JSON: {report['json_filename']}")
+        click.echo(f"Compiti: {report['exams_checked']}; pagine con QR: {report['qr_pages']}/{report['pages_total']}")
+        for issue in report["issues"]:
+            location = f"Pagina {issue['page']}: " if issue["page"] is not None else ""
+            if issue["student_id"]:
+                location += f"Matricola {issue['student_id']}: "
+            click.echo(location + issue["message"])
+        click.secho("Verifica superata" if report["valid"] else "Verifica non superata",
+                    fg="green" if report["valid"] else "red")
+    ctx.exit(0 if report["valid"] else 1)
 
 @cli.command()
 @click.option('--config', type=click.Path(exists=True, resolve_path=True), required=True, default=os.path.join('.', 'config.yaml'))
 @click.argument('questions_dir', type=click.Path(exists=True, file_okay=False, resolve_path=True), default=os.path.join('.', 'questions'))
 @click.option('--output', '-o', type=click.Path(resolve_path=True), default=os.path.join('.', 'exam-test.pdf'))
+@click.option('--check-overfull', is_flag=True, help='Warn about significant LaTeX overfull boxes.')
 @click.option('--yes', '-y', is_flag=True, type=bool, required=False, default=False, help='Answer yes to all prompt requests')
 @click.pass_context
-def test(ctx, config, questions_dir, output, yes):
+def test(ctx, config, questions_dir, output, check_overfull, yes):
     """
     Generates a comprehensive pdf file with all the questions.
     """
@@ -260,7 +313,8 @@ def test(ctx, config, questions_dir, output, yes):
             click.secho("Nothing done", fg='bright_yellow')
             sys.exit(0)
 
-    generator = Generate(config, questions_dir, ".".join(output.split(".")[:-1]), test=True)
+    generator = Generate(config, questions_dir, ".".join(output.split(".")[:-1]), test=True,
+                         check_overfull=check_overfull)
     generator.process()
 
 @cli.command()

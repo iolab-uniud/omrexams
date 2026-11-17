@@ -287,18 +287,14 @@ rectangle/.default={0.2cm}}
   \renewcommand{\choicelabel}{\blacksquared{\sffamily\footnotesize\thechoice}}
 }
 \DeclareOption{dyslexia}{%
-  \IfFontExistsTF{OpenDyslexic}{%
-    \setallmainfonts{OpenDyslexic}
-    \setsansfont{OpenDyslexic}
-  }{%
-    \setallmainfonts{Comic Sans MS}
-    \setsansfont{Comic Sans MS}
-  }%
-  \IfFontExistsTF{OpenDyslexicMono}{%
-    \setmonofont{OpenDyslexicMono}
-  }{%
-   \setmonofont{Consolas}
-  }%
+  \setmainfont{EasyReadingPRO}
+  \setsansfont{EasyReadingPRO}
+  \setmonofont{Latin Modern Mono}
+}
+\DeclareOption{easyreading}{%
+  \setmainfont{EasyReadingPRO}
+  \setsansfont{EasyReadingPRO}
+  \setmonofont{Latin Modern Mono}
 }
 \newboolean{testing}
 %\setboolean{testing}{false}
